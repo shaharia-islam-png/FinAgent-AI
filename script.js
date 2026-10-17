@@ -116,7 +116,7 @@
   const wait = ms => new Promise(r => setTimeout(r, ms));
   const escapeHtml = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const titleCase = s => String(s).replace(/\w\S*/g, w => w[0].toUpperCase() + w.slice(1));
-  const getWebhook = () => localStorage.getItem(WEBHOOK_KEY) || '';
+  const getWebhook = () => (localStorage.getItem(WEBHOOK_KEY) || '').trim() || 'https://ainuba.app.n8n.cloud/webhook/finance-agent';
   const money = v => `${CUR}${Number(v).toFixed(2)}`;
 
   function fmtWhen(ts) {
