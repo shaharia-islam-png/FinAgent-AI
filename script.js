@@ -14,6 +14,11 @@
   const USERS_KEY    = 'finagent_users_v1';
   const SESSION_KEY  = 'finagent_session_v1';
   const WEBHOOK_KEY  = 'finagent_webhook_v1';
+  /* Production n8n webhook — used when no custom URL is saved in localStorage.
+     Deployed sites (Netlify, GitHub Pages…) start with an EMPTY localStorage,
+     so without this default the engine falls back to local mode + Standby.
+     Override anytime via the Settings (gear) modal. */
+  const DEFAULT_WEBHOOK = 'https://ainuba.app.n8n.cloud/webhook/finance-agent';
   const dataKey      = email => `finagent_data_v1_${email}`;
   const profileKey   = email => `finagent_profile_v1_${email}`;
   const catKey       = email => `finagent_cats_v1_${email}`;
@@ -57,12 +62,88 @@
   }
 
   const CATEGORY_KEYWORDS = {
-    Groceries: ['grocer', 'supermarket', 'walmart', 'costco', 'market', 'produce', 'whole foods', 'trader joe'],
-    Dining:    ['kfc', 'dining', 'restaurant', 'lunch', 'dinner', 'breakfast', 'brunch', 'coffee', 'cafe', 'mcdonald', 'starbucks', 'pizza', 'food', 'milk tea', 'bubble tea'],
-    Utilities: ['utilit', 'electric', 'power', 'water bill', 'gas bill', 'internet', 'wifi', 'broadband', 'phone bill', 'unicom'],
-    Transport: ['transport', 'uber', 'lyft', 'didi', 'taxi', 'fuel', 'petrol', 'gas station', 'metro', 'subway', 'parking', 'train', 'bus', 'shell', 'chevron'],
-    Shopping:  ['shopping', 'amazon', 'uniqlo', 'zara', "h&m", 'clothes', 'clothing', 'shoes', 'sneakers', 'electronics', 'mall', 'ikea', 'target'],
+    Groceries: ['grocer', 'supermarket', 'walmart', 'costco', 'market', 'produce', 'whole foods', 'trader joe', 'bazar', 'vegetable', 'fish', 'meat', 'rice', 'fruit'],
+    Dining:    ['kfc', 'dining', 'restaurant', 'lunch', 'dinner', 'breakfast', 'brunch', 'coffee', 'cafe', 'mcdonald', 'starbucks', 'pizza', 'food', 'milk tea', 'bubble tea', 'burger', 'domino', 'snack', 'meal', 'biryani', 'dessert'],
+    Utilities: ['utilit', 'electric', 'power', 'water bill', 'gas bill', 'internet', 'wifi', 'broadband', 'phone bill', 'unicom', 'recharge', 'bill'],
+    Transport: ['transport', 'uber', 'lyft', 'didi', 'taxi', 'fuel', 'petrol', 'gas station', 'metro', 'subway', 'parking', 'train', 'bus', 'shell', 'chevron', 'rickshaw', 'cng', 'ticket', 'launch'],
+    Shopping:  ['shopping', 'amazon', 'uniqlo', 'zara', "h&m", 'clothes', 'clothing', 'shoes', 'sneakers', 'electronics', 'mall', 'ikea', 'target', 'shirt', 'pants', 'dress', 'saree', 'cosmetics', 'makeup', 'bata', 'bag'],
+    Education: ['education', 'tuition', 'school', 'college', 'university', 'course', 'book', 'exam', 'study', 'stationery', 'coaching', 'admission'],
+    Health:    ['health', 'medicine', 'doctor', 'hospital', 'pharmacy', 'clinic', 'treatment'],
+    Travel:    ['travel', 'trip', 'tour', 'hotel', 'flight', 'vacation'],
+    Rent:      ['rent', 'flat', 'accommodation'],
   };
+
+  /* Natural-language bridges from everyday phrases onto the user's OWN
+     trained categories — "eat pizza from Dominos" → Dining/Food,
+     "clothes and shoes from Bata" → Shopping, "Green Line bus" →
+     Transport, "education purposes" → Education. Trained category names
+     always win over this static map, so the user's naming rules. */
+  const CATEGORY_SYNONYMS = {
+    Food:      ['pizza', 'burger', 'restaurant', 'lunch', 'dinner', 'breakfast', 'brunch', 'meal', 'snack', 'kfc', 'mcdonald', 'starbucks', 'cafe', 'coffee', 'domino', 'biryani', 'dessert', 'food', 'dining', 'grocer', 'grocery', 'bazar', 'supermarket', 'walmart', 'costco', 'vegetable', 'fish', 'meat', 'rice', 'fruit', 'takeout', 'takeaway', 'take away', 'delivery', 'foodpanda', 'uber eats', 'meituan', 'eleme', 'canteen', 'street food', 'milk tea', 'bubble tea', '外卖', '美团', '饿了么'],
+    Dining:    ['pizza', 'burger', 'restaurant', 'lunch', 'dinner', 'breakfast', 'brunch', 'meal', 'snack', 'kfc', 'mcdonald', 'starbucks', 'cafe', 'coffee', 'domino', 'biryani', 'dessert', 'food', 'grocer', 'grocery', 'bazar', 'supermarket', 'takeout', 'takeaway', 'delivery', 'canteen', 'milk tea', 'bubble tea'],
+    Groceries: ['grocer', 'grocery', 'food', 'dining', 'kfc', 'supermarket', 'bazar', 'vegetable', 'fish', 'meat', 'rice', 'fruit', 'walmart', 'costco', 'takeout', 'takeaway', 'delivery', 'foodpanda'],
+    Other:     ['misc', 'miscellaneous', 'unknown', 'random', 'other', 'others'],
+    Utilities: ['electric', 'water bill', 'gas bill', 'internet', 'wifi', 'broadband', 'phone bill', 'recharge', 'bill', 'unicom'],
+    Transport: ['bus', 'metro', 'subway', 'train', 'uber', 'taxi', 'didi', 'rickshaw', 'cng', 'fuel', 'petrol', 'ticket', 'launch', 'parking'],
+    Travel:    ['trip', 'tour', 'hotel', 'flight', 'vacation', 'travel'],
+    Shopping:  ['clothes', 'clothing', 'shoes', 'shirt', 'pants', 'dress', 'saree', 'mall', 'cosmetics', 'makeup', 'bag', 'bata', 'uniqlo', 'zara', 'amazon', 'sneakers'],
+    Education: ['tuition', 'school', 'college', 'university', 'course', 'study', 'book', 'exam', 'stationery', 'coaching', 'admission', 'education'],
+    Health:    ['medicine', 'doctor', 'hospital', 'pharmacy', 'clinic', 'treatment', 'health'],
+    Rent:      ['rent', 'flat', 'accommodation'],
+    Savings:   ['saving', 'deposit'],
+  };
+
+  const wordHit = (t, w) => new RegExp('\\b' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b').test(t);
+  /* crude singular/plural stem — "Groceries"→"grocery", "foods"→"food" */
+  const stem = w => String(w).toLowerCase().trim().replace(/ies$/, 'y').replace(/s$/, '');
+
+  /* Broad "umbrella" categories claim everyday phrases first — when the
+     user trains Food, groceries / dining / takeout all roll into it. */
+  const UMBRELLA_FIRST = new Set(['food', 'groceries', 'grocery', 'dining', 'meal']);
+
+  /* The user's trained categories ALWAYS win over the static keyword map:
+     1) message mentions a trained category name  → that category
+     2) message hits a trained category's synonyms → that category
+     3) static CATEGORY_KEYWORDS → 4) "on/from <noun>" guess → Misc */
+  function matchTrainedCategory(text) {
+    if (!text || !Object.keys(CATEGORIES).length) return null;
+    const t = ' ' + text.toLowerCase() + ' ';
+    for (const name of Object.keys(CATEGORIES))
+      if (wordHit(t, name.toLowerCase()) || stem(t.trim()) === stem(name)) return name;
+    const keys = Object.keys(CATEGORIES).sort((a, b) =>
+      (UMBRELLA_FIRST.has(b.toLowerCase()) ? 1 : 0) - (UMBRELLA_FIRST.has(a.toLowerCase()) ? 1 : 0));
+    for (const name of keys)
+      for (const s of (CATEGORY_SYNONYMS[name] || []))
+        if (t.includes(s)) return name;
+    return null;
+  }
+
+  /* =====================================================================
+     BUDGET UMBRELLA ROLL-UP — the user's budget-trained categories are
+     the ONLY authoritative buckets. Any other category name (chosen by
+     the n8n AI, read back from Google Sheets, or guessed locally) that a
+     budgeted umbrella claims via exact/plural-stem name or synonyms
+     rolls into it, so "Spent ¥45 food at KFC" deducts from the user's
+     Food limit even when the engine logs it as "Dining"/"Restaurant"/
+     "Groceries" — no more parallel auto-created category.
+     Budget-less setups roll onto nothing — old behavior preserved.
+  ===================================================================== */
+  function rollToBudgeted(cat) {
+    if (!cat || !Object.keys(CATEGORIES).length) return null;
+    const budgeted = Object.keys(CATEGORIES).filter(n => (CATEGORIES[n].budget || 0) > 0);
+    if (!budgeted.length) return null;
+    const t = ' ' + String(cat).toLowerCase().trim() + ' ';
+    /* 1 · exact / plural-stem name hit (self-match included) */
+    for (const name of budgeted)
+      if (wordHit(t, name.toLowerCase()) || stem(t.trim()) === stem(name)) return name;
+    /* 2 · synonym hit — umbrella categories (Food…) claim first */
+    const sorted = [...budgeted].sort((a, b) =>
+      (UMBRELLA_FIRST.has(b.toLowerCase()) ? 1 : 0) - (UMBRELLA_FIRST.has(a.toLowerCase()) ? 1 : 0));
+    for (const name of sorted)
+      for (const s of (CATEGORY_SYNONYMS[name] || []))
+        if (t.includes(s)) return name;
+    return null;
+  }
 
   const CHIPS = [
     { icon: 'fa-wallet',          label: 'My monthly income is 8000' },
@@ -116,7 +197,7 @@
   const wait = ms => new Promise(r => setTimeout(r, ms));
   const escapeHtml = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const titleCase = s => String(s).replace(/\w\S*/g, w => w[0].toUpperCase() + w.slice(1));
-  const getWebhook = () => (localStorage.getItem(WEBHOOK_KEY) || '').trim() || 'https://ainuba.app.n8n.cloud/webhook/finance-agent';
+  const getWebhook = () => (localStorage.getItem(WEBHOOK_KEY) || '').trim() || DEFAULT_WEBHOOK;
   const money = v => `${CUR}${Number(v).toFixed(2)}`;
 
   function fmtWhen(ts) {
@@ -289,9 +370,14 @@
     if (!isFinite(amount) || amount <= 0) return null;
 
     const rawCat = String(r.category ?? r.Category ?? '').trim();
-    let category = Object.keys(CATEGORIES).find(k => k.toLowerCase() === rawCat.toLowerCase());
+    let category = Object.keys(CATEGORIES).find(k => k.toLowerCase() === rawCat.toLowerCase() || stem(k) === stem(rawCat));
     if (!category) category = rawCat ? titleCase(rawCat)
                           : (detectCategory(String(r.merchant ?? '')) || 'Misc');
+    /* roll loose sheet categories onto the user's BUDGET umbrella first —
+       "Dining" / "Grocery" / "Takeout" rows deduct from Food when Food
+       carries the user's limit; trained-name matching stays as fallback */
+    const rolled = rollToBudgeted(category) || matchTrainedCategory(category);
+    if (rolled) category = rolled;
     addCategory(category, 0);
 
     let ts = Date.parse(r.ts ?? r.date ?? r.Date ?? '');
@@ -308,8 +394,15 @@
     const res = await apiPost('getExpenses', { userId: currentUser.email });
     if (res.ok && Array.isArray(res.expenses)) {
       const list = res.expenses.map(normalizeServerExpense).filter(Boolean);
+      /* ledger canonicalization — budgeted umbrellas claim near-duplicate
+         sheet categories ("Dining" rows count toward the user's Food limit) */
+      for (const e of list) {
+        const c = rollToBudgeted(e.category);
+        if (c && c !== e.category) e.category = c;
+      }
       expenses = list;
       saveData();
+      pruneEmptyCategories();      /* drop 0-limit buckets the roll emptied */
       refreshDashboard();
       if (list.length) {
         if (!silent || !engineSynced) {
@@ -356,6 +449,9 @@
       if (changed) { buildBudgetRows(); refreshDashboard(); }
     }
 
+    /* limits read-back may have emptied/created buckets — tidy the panel */
+    if (pruneEmptyCategories()) refreshDashboard();
+
     /* budgets trained but income still missing → the user HAS onboarded,
        never re-show the "please enter your budget" greeting on refresh */
     if (!profile.onboarded && hasTrainedBudgets()) {
@@ -381,7 +477,7 @@
              || raw.match(/\bmy\s+budget\s*(?:is|:|=)?\s*(\d[\d,]*(?:\.\d{1,2})?)/i);
     if (inc) {
       const amount = num(inc[1]);
-      if (amount > 0) { cmds.push({ type: 'income', amount }); return cmds; }
+      if (amount > 0) cmds.push({ type: 'income', amount });   /* no early return — "My income is 5000, food budget 1500" parses BOTH */
     }
 
     /* split on commas / semicolons / newlines / "and" → parse each fragment */
@@ -664,8 +760,10 @@ Then train me with your own categories anytime:
 
     if (!chart) initChart();
     buildBudgetRows();
+    pruneEmptyCategories();
     refreshDashboard();
     updateBadge();
+    verifyEngine().catch(() => {});   /* real engine status right after entry */
 
     const onboardedAtEntry = profile.onboarded;
     showWelcome();
@@ -755,7 +853,20 @@ Then train me with your own categories anytime:
   function totalsByCategory() {
     const t = {};
     for (const k in CATEGORIES) t[k] = 0;
-    expenses.forEach(e => { if (t[e.category] !== undefined) t[e.category] += e.amount; });
+    expenses.forEach(e => {
+      let cat = e.category;
+      if (t[cat] === undefined) {
+        /* stray category (cache mismatch) — roll onto a trained umbrella */
+        const r = rollToBudgeted(cat) || matchTrainedCategory(cat);
+        if (!(r && t[r] !== undefined)) return;
+        cat = r;
+      } else if ((CATEGORIES[cat]?.budget || 0) <= 0) {
+        /* 0-limit bucket claimed by a budgeted umbrella → count there */
+        const r = rollToBudgeted(cat);
+        if (r && r !== cat && t[r] !== undefined) cat = r;
+      }
+      t[cat] += e.amount;
+    });
     return t;
   }
 
@@ -876,6 +987,26 @@ Then train me with your own categories anytime:
     saveData();
   }
 
+  /* ---------------------------------------------------------------------
+     PRUNE — remove 0-limit categories nothing spends on anymore. The
+     budget roll-up empties engine-invented near-duplicates ("Dining"
+     once Food carries the limit); this erases their leftover rows so the
+     chart, legend and budget panel show ONLY the user's own buckets.
+     Trained limits (budget > 0) and buckets with live expenses stay.
+  --------------------------------------------------------------------- */
+  function pruneEmptyCategories() {
+    const live = new Set(expenses.map(e => e.category));
+    let removed = 0;
+    for (const name of Object.keys(CATEGORIES)) {
+      if ((CATEGORIES[name].budget || 0) > 0) continue;  /* user-trained limit → keep */
+      if (live.has(name)) continue;                      /* still spending → keep */
+      delete CATEGORIES[name];
+      removed++;
+    }
+    if (removed) { saveCategoriesLocal(); buildBudgetRows(); }
+    return removed;
+  }
+
   function addExpense(exp) {
     addCategory(exp.category, 0);   // "Spent ¥300 on Education" → Education joins the chart
     const entry = { ...exp, ts: Date.now(), status: 'logged' };
@@ -919,7 +1050,8 @@ Then train me with your own categories anytime:
     if (amount === null) return null;
     const merchant = detectMerchant(text);
 
-    let category = detectCategory(text) || detectCategory(merchant || '');
+    let category = matchTrainedCategory(text) || matchTrainedCategory(merchant || '')
+                || detectCategory(text)    || detectCategory(merchant || '');
     if (!category) {
       const m = text.match(/\bon\s+([A-Za-z][A-Za-z ]{2,24}?)(?=\s+(?:at|from)\b|[.,!?]|$)/i);
       if (m) {
@@ -928,6 +1060,8 @@ Then train me with your own categories anytime:
       }
     }
     category = category || 'Misc';
+    const rolled = rollToBudgeted(category);   /* budgeted umbrellas own the name */
+    if (rolled) category = rolled;
     return { amount: +amount.toFixed(2), category, merchant: merchant || category };
   }
 
@@ -979,6 +1113,7 @@ Expected one of \`output\`, \`reply\`, \`text\` or \`message\` in the JSON respo
   }
 
   function replyCategory(name) {
+    name = rollToBudgeted(name) || name;       /* "dining" question → Food bucket */
     const limit = budgetOf(name);
     const spent = totalsByCategory()[name] || 0;
     const left = limit - spent;
@@ -1026,6 +1161,35 @@ Expected one of \`output\`, \`reply\`, \`text\` or \`message\` in the JSON respo
 
     return `I couldn't find an amount in that message.
 Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining budget?"* — say *"help"* for the full menu.`;
+  }
+
+  /* The n8n Gemini agent picks its own Category when appending to Google
+     Sheets — teach it the user's trained categories inline (zero n8n edits
+     needed) so "education purposes" lands in Education, never in
+     Miscellaneous, and replies use ¥ instead of $. Budgeted umbrellas get
+     explicit absorb hints so the agent writes "Food", never "Dining". */
+  const ROLL_HINTS = {
+    Food:          "Dining, restaurants, KFC/McDonald's/Starbucks, takeout, delivery, groceries, snacks",
+    Groceries:     'supermarket runs, vegetables, rice, fruits, Walmart/Costco, dining and takeout',
+    Dining:        'restaurants, KFC, cafes, food, takeout, delivery',
+    Transport:     'bus, metro, subway, taxi, Uber/DiDi, rickshaw, CNG, fuel, parking, train tickets',
+    Shopping:      'clothes, shoes, electronics, mall and online orders',
+    Education:     'tuition, books, courses, coaching, school/admission fees, stationery',
+    Health:        'medicine, doctor visits, hospital, pharmacy, clinic',
+    Utilities:     'electricity, water, gas, internet, wifi, phone bills, recharge',
+    Rent:          'flat rent, accommodation',
+    Travel:        'flights, hotels, trips, vacation',
+    Entertainment: 'movies, games, streaming, concerts',
+  };
+
+  function categoryGuidance() {
+    const cats = Object.keys(CATEGORIES);
+    if (!cats.length) return '';
+    const absorb = cats
+      .filter(n => (CATEGORIES[n].budget || 0) > 0 && ROLL_HINTS[n])
+      .map(n => `${n} absorbs: ${ROLL_HINTS[n]}`)
+      .join(' | ');
+    return `\n\n[FinAgent system note — follow strictly when logging to the sheet: Category MUST be exactly one of the user's own categories: ${cats.join(', ')}. Pick the closest match; NEVER invent a near-duplicate or parallel category (no "Dining" when Food exists, no "Grocery" when Food/Groceries exists), and never use "Miscellaneous" unless nothing fits.${absorb ? ' Roll-ups: ' + absorb + '.' : ''} Currency is CNY: write amounts as ¥xx, never $.]`;
   }
 
   /* =====================================================================
@@ -1182,7 +1346,8 @@ Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining bud
       try {
         reply = await callWebhook({
           action: 'chat',
-          chatInput: text || 'Receipt image attached for processing',
+          chatInput: (text || 'Receipt image attached for processing')
+            + ((exp || /spent|paid|bought|cost|logged|expense/i.test(text || '')) ? categoryGuidance() : ''),
           image: image || null,
           sessionId,
           userId: currentUser.email,
@@ -1247,11 +1412,77 @@ Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining bud
   /* =====================================================================
      WEBHOOK MODAL
   ===================================================================== */
+  function setEngineState(state) {   /* 'active' | 'offline' | 'standby' */
+    engineBadge.classList.toggle('status-badge--on',  state === 'active');
+    engineBadge.classList.toggle('status-badge--off', state !== 'active');
+    engineBadgeText.textContent = state === 'active' ? 'n8n Engine Active'
+                                : state === 'offline' ? 'n8n Engine Offline'
+                                : 'n8n Engine Standby';
+  }
+
   function updateBadge() {
-    const on = !!getWebhook();
-    engineBadge.classList.toggle('status-badge--on', on);
-    engineBadge.classList.toggle('status-badge--off', !on);
-    engineBadgeText.textContent = on ? 'n8n Engine Active' : 'n8n Engine Standby';
+    /* immediate paint from config; verifyEngine() confirms real reachability */
+    setEngineState(getWebhook() ? 'active' : 'standby');
+  }
+
+  /* Cheap engine health probe — uses the getProfile branch (no Gemini call),
+     so it answers fast. ANY HTTP reply (even an error payload) proves the
+     workflow is reachable; only a network failure / abort shows Offline. */
+  async function verifyEngine() {
+    if (!getWebhook()) { setEngineState('standby'); return; }
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 12000);
+    try {
+      const res = await fetch(getWebhook(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'getProfile',
+          userId: (currentUser && currentUser.email) || 'engine-ping@finagent.ai',
+          source: 'finagent-web',
+          timestamp: new Date().toISOString(),
+        }),
+        signal: ctrl.signal,
+      });
+      setEngineState(res.ok ? 'active' : 'offline');
+    } catch {
+      setEngineState('offline');
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /* =====================================================================
+     AMBIENT TREND ARROWS — pure decoration, market-ticker feel.
+     Spawns ~14 Font-Awesome arrows inside .bg-scene with randomized
+     position/size/speed; the CSS keyframe (arrowRise) floats each one
+     from below the viewport to the top, forever. Negative animation-delay
+     means they are already mid-flight on page load. Honors reduced motion.
+  ===================================================================== */
+  function spawnTrendArrows() {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    let scene = document.querySelector('.bg-scene');
+    if (!scene) {
+      scene = document.createElement('div');
+      scene.className = 'bg-scene';
+      document.body.prepend(scene);
+    }
+    if (scene.dataset.arrows) return;        /* guard against double-spawn */
+    scene.dataset.arrows = '1';
+    const COUNT = 14;
+    for (let i = 0; i < COUNT; i++) {
+      const el = document.createElement('i');
+      el.className = 'fa-solid bg-arrow ' +
+        (i % 3 === 0 ? 'fa-arrow-up-long' : 'fa-arrow-trend-up') +
+        (i % 4 === 0 ? ' bg-arrow--cy' : '');
+      el.style.fontSize = (13 + Math.random() * 22).toFixed(0) + 'px';          /* 13–35px */
+      el.style.left = (Math.random() * 100).toFixed(2) + '%';
+      el.style.animationDuration = (14 + Math.random() * 16).toFixed(1) + 's';  /* 14–30s per rise */
+      el.style.animationDelay = (-Math.random() * 30).toFixed(1) + 's';         /* already rising */
+      el.style.setProperty('--op', (0.06 + Math.random() * 0.09).toFixed(2));   /* 0.06–0.15, subtle */
+      el.style.setProperty('--sway', ((Math.random() * 60) - 30).toFixed(0) + 'px');
+      scene.appendChild(el);
+    }
   }
 
   function openModal() {
@@ -1277,7 +1508,7 @@ Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining bud
     demoBtn.addEventListener('click', () => {
       clearFormErrors();
       seedDemoUser();
-      toast('success', 'Signed in with the demo account (local mode).');
+      toast('success', 'Signed in with the demo account.');
       enterApp({ name: 'Demo User', email: 'demo@finagent.ai' });
     });
     logoutBtn.addEventListener('click', handleLogout);
@@ -1334,6 +1565,7 @@ Ask me anything, or tap a quick chip below.`);
       if (v) localStorage.setItem(WEBHOOK_KEY, v);
       else   localStorage.removeItem(WEBHOOK_KEY);
       updateBadge();
+      verifyEngine().catch(() => {});   /* confirm the saved endpoint for real */
       toast('success', v ? 'Webhook saved — engine now drives auth, ledger & chat.' : 'Endpoint cleared — running everything locally.');
       closeModal();
       if (v && currentUser) syncFromEngine({ silent: false }).catch(() => {});
@@ -1396,6 +1628,7 @@ Ask me anything, or tap a quick chip below.`);
 
     document.documentElement.classList.remove('authed');
     updateBadge();
+    spawnTrendArrows();
     setTimeout(() => loginEmail.focus(), 450);
   }
 
