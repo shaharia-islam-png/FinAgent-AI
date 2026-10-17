@@ -629,3 +629,66 @@ a[href*="netlify.com"], #netlify-badge, .netlify-badge { display: none !importan
 @media (prefers-reduced-motion: reduce) {
   .bg-arrow { display: none !important; }
 }
+
+/* =====================================================================
+   MOBILE PRO POLISH — v3 · professional phone experience (additive)
+   Phones get: 2×2 stat board, stacked layouts, zero horizontal jiggle,
+   native-feeling spacing, bigger tap targets, iOS zoom fixes,
+   cheaper blur for smoother scrolling, landscape support.
+===================================================================== */
+
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+
+/* long content can never blow out a grid column */
+[class*="grid"] > * { min-width: 0; }
+
+/* ---------- phones (≤ 640px) ---------- */
+@media (max-width: 640px) {
+  /* safety net — the page never scrolls sideways */
+  html, body { overflow-x: hidden; }
+
+  /* stat strip: any 4-up board becomes a clean 2×2 grid */
+  [class*="grid-cols-4"] { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+  /* 3-col layouts stack into one professional column */
+  [class*="grid-cols-3"] { grid-template-columns: minmax(0, 1fr) !important; }
+
+  /* header rows wrap gracefully instead of overflowing */
+  header { flex-wrap: wrap; row-gap: 8px; }
+
+  /* iOS: keyboard inputs never trigger zoom */
+  .field-input, .chat-input, textarea, input, select { font-size: 16px; }
+
+  /* chat panel sized for the phone screen + thumb keyboard */
+  .chat-panel { height: min(58vh, 540px); height: min(58dvh, 540px); }
+  .chat-panel { padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+
+  /* slightly tighter, app-like glass cards */
+  .glass { border-radius: 16px; }
+
+  /* transactions table: wraps naturally, scrolls only if it must */
+  table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .tx-merchant, .legend-name, .bubble, .bot-line { overflow-wrap: anywhere; }
+
+  /* modal always fits above the keyboard */
+  .modal-card { max-height: calc(100vh - 48px); max-height: calc(100dvh - 48px); overflow-y: auto; }
+
+  /* comfortable tap targets */
+  .icon-btn { width: 40px; height: 40px; }
+  .chip { padding: 9px 14px; }
+
+  /* cheaper glow blur → noticeably smoother scrolling */
+  .bg-glow--a, .bg-glow--b { filter: blur(70px); }
+}
+
+/* ---------- small phones (≤ 480px) ---------- */
+@media (max-width: 480px) {
+  .edition-tag { display: none; }                  /* frees header space */
+  .bg-arrow:nth-of-type(n + 8) { display: none; }  /* keep 7 arrows — battery friendly */
+}
+
+/* ---------- landscape phones ---------- */
+@media (max-height: 500px) and (orientation: landscape) {
+  .chat-panel { height: calc(100vh - 130px); height: calc(100dvh - 130px); }
+  #authScreen { padding: 12px; align-items: flex-start; }
+  .auth-card { margin-top: 5vh; }
+}
