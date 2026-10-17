@@ -71,6 +71,11 @@
     Health:    ['health', 'medicine', 'doctor', 'hospital', 'pharmacy', 'clinic', 'treatment'],
     Travel:    ['travel', 'trip', 'tour', 'hotel', 'flight', 'vacation'],
     Rent:      ['rent', 'flat', 'accommodation'],
+    /* LAST so specific categories always win the scan. Catches "other
+       purposes", "miscellaneous" and generic fallback merchants like
+       "Various" — exactly what the n8n AI writes when the user spends
+       on something unspecified but THEIR "Other" bucket owns it. */
+    Other:     ['other', 'misc', 'miscellaneous', 'various', 'random', 'unknown'],
   };
 
   /* Natural-language bridges from everyday phrases onto the user's OWN
@@ -397,6 +402,15 @@
     if (!rolled) {
       const merchCat = detectCategory(String(r.merchant ?? r.Merchant ?? ''));
       if (merchCat) rolled = rollToBudgeted(merchCat);
+    }
+    /* third chance — the n8n AI often narrates ONE category in its reply
+       ("Category: Other") but writes a near-duplicate into the sheet
+       ("Shopping"). A generic merchant ("Various") plus an honest
+       description ("Other miscellaneous expenses") tells us what it
+       REALLY meant — rescue through the description/note text. */
+    if (!rolled) {
+      const descCat = detectCategory(String(r.description ?? r.Description ?? r.note ?? r.Note ?? ''));
+      if (descCat) rolled = rollToBudgeted(descCat);
     }
     if (!rolled) rolled = matchTrainedCategory(category);   /* trained-name fallback */
     if (rolled) category = rolled;
@@ -1196,6 +1210,7 @@ Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining bud
     Dining:        'restaurants, KFC, cafes, food, takeout, delivery',
     Transport:     'bus, metro, subway, taxi, Uber/DiDi, rickshaw, CNG, fuel, parking, train tickets',
     Shopping:      'clothes, shoes, electronics, mall and online orders',
+    Other:         'other purposes, miscellaneous or unspecified spending, generic merchant Various — anything that fits no specific category',
     Education:     'tuition, books, courses, coaching, school/admission fees, stationery, photocopy, xerox, printouts, notes, exam fees',
     Health:        'medicine, doctor visits, hospital, pharmacy, clinic',
     Utilities:     'electricity, water, gas, internet, wifi, phone bills, recharge',
@@ -1211,7 +1226,7 @@ Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining bud
       .filter(n => (CATEGORIES[n].budget || 0) > 0 && ROLL_HINTS[n])
       .map(n => `${n} absorbs: ${ROLL_HINTS[n]}`)
       .join(' | ');
-    return `\n\n[FinAgent system note — follow strictly when logging to the sheet: Category MUST be exactly one of the user's own categories: ${cats.join(', ')}. Pick the closest match; NEVER invent a near-duplicate or parallel category (no "Dining" when Food exists, no "Grocery" when Food/Groceries exists), and never use "Miscellaneous" unless nothing fits.${absorb ? ' Roll-ups: ' + absorb + '.' : ''} Currency is CNY: write amounts as ¥xx, never $.]`;
+    return `\n\n[FinAgent system note — follow strictly when logging to the sheet: Category MUST be exactly one of the user's own categories: ${cats.join(', ')}. Pick the closest match; NEVER invent a near-duplicate or parallel category (no "Dining" when Food exists, no "Grocery" when Food/Groceries exists), and never use "Miscellaneous" unless nothing fits. If the user says "other purposes", "miscellaneous" or unspecified spending, the category MUST be their "Other" category when one exists — never "Shopping".${absorb ? ' Roll-ups: ' + absorb + '.' : ''} Currency is CNY: write amounts as ¥xx, never $.]`;
   }
 
   /* =====================================================================
