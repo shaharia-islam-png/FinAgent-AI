@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="theme-color" content="#0B0F19" />
+  <title>FinAgent AI — 2026 Shenzhen FinTech Edition</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230B0F19'/%3E%3Cpath d='M44 16c-14 0-24 8-24 20 0 4 2 8 4 10 2-10 8-16 16-18-6 4-10 10-11 18 2 .6 4 1 6 1 12 0 18-10 18-24 0-3-.4-5.4-1-7z' fill='%2310B981'/%3E%3C/svg%3E" />
+
+  <!-- Fonts: Space Grotesk (display) · Outfit (body) · JetBrains Mono (figures) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: { obsidian: '#0B0F19' },
+          fontFamily: {
+            display: ['"Space Grotesk"', 'sans-serif'],
+            body: ['Outfit', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'monospace'],
+          },
+        },
+      },
+    };
+  </script>
+
+  <!-- FontAwesome CDN -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+  <!-- Chart.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+
+  <!-- Restore session before first paint to avoid auth-screen flash -->
+  <script>try { if (localStorage.getItem('finagent_session_v1')) document.documentElement.classList.add('authed'); } catch (e) {}</script>
+
+  <link rel="stylesheet" href="style.css" />
+</head>
+
+<body class="font-body text-slate-200 antialiased">
+
+  <!-- ================= AMBIENT BACKGROUND ================= -->
+  <div class="bg-scene" aria-hidden="true">
+    <div class="bg-glow bg-glow--a"></div>
+    <div class="bg-glow bg-glow--b"></div>
+    <div class="bg-grid"></div>
+  </div>
+
+  <!-- ================= AUTH SCREEN ================= -->
+  <div id="authScreen">
+    <div class="auth-wrap">
+
+      <!-- Showcase panel (desktop only) -->
+      <div class="auth-showcase">
+        <div class="flex items-center gap-3" style="animation: fadeUp .6s .05s both">
+          <div class="brand-tile brand-tile--lg"><i class="fa-solid fa-leaf"></i></div>
+          <div>
+            <p class="font-display text-2xl font-bold text-slate-50">FinAgent <span class="text-emerald-400">AI</span></p>
+            <p class="text-[11px] uppercase tracking-[0.22em] text-cyan-300/60">2026 Shenzhen FinTech Edition</p>
+          </div>
+        </div>
+
+        <h2 class="mt-10 font-display text-4xl font-bold leading-tight text-slate-50" style="animation: fadeUp .6s .15s both">
+          Command your money<br />with a <span class="text-emerald-400 glow-text">single sentence.</span>
+        </h2>
+        <p class="mt-4 max-w-md text-[15px] leading-relaxed text-slate-400" style="animation: fadeUp .6s .25s both">
+          An agentic personal finance officer that logs expenses, watches your budgets and answers questions — in natural language.
+        </p>
+
+        <div class="mt-9 space-y-3.5" style="animation: fadeUp .6s .35s both">
+          <div class="feature-row">
+            <span class="feature-ico ico--em"><i class="fa-solid fa-comments"></i></span>
+            <div><p class="text-[13.5px] font-semibold text-slate-100">Conversational Ledger</p><p class="text-[12px] text-slate-400">"Spent ¥35 on groceries at Walmart" — done.</p></div>
+          </div>
+          <div class="feature-row">
+            <span class="feature-ico ico--cy"><i class="fa-solid fa-chart-pie"></i></span>
+            <div><p class="text-[13.5px] font-semibold text-slate-100">Live Analytics</p><p class="text-[12px] text-slate-400">Charts, budgets and history recalculate instantly.</p></div>
+          </div>
+          <div class="feature-row">
+            <span class="feature-ico ico--em"><i class="fa-solid fa-plug"></i></span>
+            <div><p class="text-[13.5px] font-semibold text-slate-100">n8n-Native</p><p class="text-[12px] text-slate-400">Wire any LLM agent through one webhook endpoint.</p></div>
+          </div>
+        </div>
+
+        <div class="mt-10 flex gap-3" style="animation: fadeUp .6s .45s both">
+          <div class="mini-stat"><p class="font-mono text-sm font-semibold text-emerald-300">¥1.17K</p><p class="mini-stat-label">tracked / mo</p></div>
+          <div class="mini-stat"><p class="font-mono text-sm font-semibold text-cyan-300">5</p><p class="mini-stat-label">categories</p></div>
+          <div class="mini-stat"><p class="font-mono text-sm font-semibold text-emerald-300">24/7</p><p class="mini-stat-label">agent uptime</p></div>
+        </div>
+      </div>
+
+      <!-- Auth card -->
+      <div class="auth-card glass">
+        <div class="flex items-center gap-3 lg:hidden">
+          <div class="brand-tile"><i class="fa-solid fa-leaf"></i></div>
+          <div>
+            <p class="font-display text-lg font-bold text-slate-50">FinAgent <span class="text-emerald-400">AI</span></p>
+            <p class="text-[10px] uppercase tracking-[0.18em] text-cyan-300/60">2026 Shenzhen Edition</p>
+          </div>
+        </div>
+
+        <h3 class="mt-5 font-display text-xl font-bold text-slate-50">Welcome aboard</h3>
+        <p class="mt-1 text-[12.5px] text-slate-400">Sign in to activate your financial co-pilot.</p>
+
+        <!-- Sliding tab switch -->
+        <div class="auth-tabs mt-6" id="authTabs" data-active="login">
+          <span class="tab-ind"></span>
+          <button type="button" id="tabLoginBtn" class="tab-btn tab-btn--active">Login</button>
+          <button type="button" id="tabRegisterBtn" class="tab-btn">Register</button>
+        </div>
+
+        <!-- Login form -->
+        <form id="loginForm" class="mt-5 space-y-4" autocomplete="on" novalidate>
+          <div>
+            <label class="field-label" for="loginEmail">Email</label>
+            <input id="loginEmail" type="email" class="field-input" placeholder="you@example.com" autocomplete="email" />
+          </div>
+          <div>
+            <label class="field-label" for="loginPassword">Password</label>
+            <input id="loginPassword" type="password" class="field-input" placeholder="••••••••" autocomplete="current-password" />
+          </div>
+          <p id="loginError" class="form-error hidden"><i class="fa-solid fa-circle-exclamation"></i><span></span></p>
+          <button type="submit" class="primary-btn w-full justify-center py-2.5">
+            <i class="fa-solid fa-arrow-right-to-bracket"></i> Enter Dashboard
+          </button>
+        </form>
+
+        <!-- Register form -->
+        <form id="registerForm" class="mt-5 hidden space-y-4" autocomplete="off" novalidate>
+          <div>
+            <label class="field-label" for="regName">Full name</label>
+            <input id="regName" type="text" class="field-input" placeholder="Ada Chen" />
+          </div>
+          <div>
+            <label class="field-label" for="regEmail">Email</label>
+            <input id="regEmail" type="email" class="field-input" placeholder="you@example.com" />
+          </div>
+          <div>
+            <label class="field-label" for="regPassword">Password <span class="normal-case text-slate-500">(min 6 chars)</span></label>
+            <input id="regPassword" type="password" class="field-input" placeholder="••••••••" />
+          </div>
+          <p id="regError" class="form-error hidden"><i class="fa-solid fa-circle-exclamation"></i><span></span></p>
+          <button type="submit" class="primary-btn w-full justify-center py-2.5">
+            <i class="fa-solid fa-user-plus"></i> Create Account
+          </button>
+        </form>
+
+        <div class="my-5 flex items-center gap-3">
+          <span class="h-px flex-1 bg-slate-700/40"></span>
+          <span class="text-[10px] uppercase tracking-widest text-slate-500">or</span>
+          <span class="h-px flex-1 bg-slate-700/40"></span>
+        </div>
+
+        <button type="button" id="demoBtn" class="ghost-btn w-full justify-center py-2.5">
+          <i class="fa-solid fa-bolt"></i> Explore with the demo account
+        </button>
+
+        <p class="mt-5 text-center text-[10.5px] leading-relaxed text-slate-500">
+          <i class="fa-solid fa-shield-halved mr-1 text-emerald-500/60"></i>
+          Demo authentication — credentials &amp; ledger are stored locally in your browser only.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= MAIN APP ================= -->
+  <div id="appShell">
+
+    <!-- Header -->
+    <header class="sticky top-0 z-30 border-b border-white/[0.06] bg-obsidian/70 backdrop-blur-xl">
+      <div class="mx-auto flex h-16 max-w-[1600px] items-center justify-between gap-3 px-4 sm:px-6">
+        <!-- Brand -->
+        <div class="flex min-w-0 items-center gap-3">
+          <div class="brand-tile"><i class="fa-solid fa-leaf"></i></div>
+          <div class="min-w-0">
+            <div class="flex items-center gap-2">
+              <h1 class="font-display text-[17px] font-bold tracking-tight text-slate-50">FinAgent <span class="text-emerald-400">AI</span></h1>
+              <span class="edition-tag hidden md:inline-flex">2026 Shenzhen FinTech Edition</span>
+            </div>
+            <p class="text-[10px] tracking-wide text-slate-500 md:hidden">2026 Shenzhen FinTech Edition</p>
+          </div>
+        </div>
+
+        <!-- Status · config · profile -->
+        <div class="flex shrink-0 items-center gap-2 sm:gap-3">
+          <div id="engineBadge" class="status-badge status-badge--on">
+            <span class="pulse-dot"></span>
+            <span id="engineBadgeText" class="hidden sm:inline">n8n Engine Active</span>
+            <span class="sm:hidden">n8n</span>
+          </div>
+          <button id="webhookBtn" class="icon-btn" aria-label="Webhook settings" title="n8n webhook configuration">
+            <i class="fa-solid fa-gear"></i>
+          </button>
+          <span class="hidden h-6 w-px bg-white/10 sm:block"></span>
+          <div class="profile-chip">
+            <span id="profileAvatar" class="avatar-circle">D</span>
+            <div class="hidden leading-tight md:block">
+              <p id="profileName" class="text-[13px] font-semibold text-slate-100">Demo User</p>
+              <p id="profileEmail" class="text-[10px] text-slate-500">demo@finagent.ai</p>
+            </div>
+          </div>
+          <button id="logoutBtn" class="icon-btn icon-btn--danger" aria-label="Log out" title="Log out">
+            <i class="fa-solid fa-arrow-right-from-bracket"></i>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main grid · chat 60 / widgets 40 -->
+    <main class="app-main relative z-10 mx-auto grid max-w-[1600px] grid-cols-1 gap-4 px-4 py-4 sm:px-6 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] lg:gap-5 lg:overflow-hidden">
+
+      <!-- ---------- LEFT · AI CHAT CONSOLE ---------- -->
+      <section class="glass chat-panel relative flex flex-col overflow-hidden">
+        <div class="flex items-center justify-between gap-3 border-b border-white/[0.06] px-4 py-3.5 sm:px-5">
+          <div class="flex items-center gap-2.5">
+            <span class="flex h-8 w-8 items-center justify-center rounded-lg border border-emerald-500/25 bg-emerald-500/10 text-[11px] text-emerald-400">
+              <i class="fa-solid fa-terminal"></i>
+            </span>
+            <div>
+              <h2 class="font-display text-sm font-semibold text-slate-50 sm:text-[15px]">Financial Advisory Console</h2>
+              <p class="text-[10px] uppercase tracking-[0.14em] text-slate-500">Agent · natural-language ledger</p>
+            </div>
+          </div>
+          <button id="clearChatBtn" class="ghost-btn">
+            <i class="fa-regular fa-trash-can text-[11px]"></i><span class="hidden sm:inline">Clear Chat</span>
+          </button>
+        </div>
+
+        <div id="chatMessages" class="thin-scroll min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4 sm:px-5"></div>
+
+        <div class="border-t border-white/[0.06] px-4 py-2.5 sm:px-5">
+          <div id="quickChips" class="no-scrollbar flex gap-2 overflow-x-auto pb-0.5"></div>
+        </div>
+
+        <form id="chatForm" class="border-t border-white/[0.06] px-4 py-3.5 sm:px-5" autocomplete="off">
+          <div id="attachPreview" class="mb-2.5 hidden"></div>
+          <div class="flex items-center gap-2">
+            <label for="receiptInput" id="attachBtn" class="dock-btn" title="Attach receipt image" aria-label="Attach receipt image">
+              <i class="fa-solid fa-paperclip"></i>
+            </label>
+            <input type="file" id="receiptInput" accept="image/*" class="hidden" />
+            <input type="text" id="chatInput" class="chat-input" placeholder="Log an expense or ask about budgets…" aria-label="Message the agent" />
+            <button type="submit" id="sendBtn" class="send-btn" aria-label="Send message">
+              <i class="fa-solid fa-paper-plane"></i>
+            </button>
+          </div>
+        </form>
+      </section>
+
+      <!-- ---------- RIGHT · FINANCIAL WIDGETS ---------- -->
+      <aside class="side-scroll thin-scroll flex min-h-0 flex-col gap-4 lg:gap-5">
+
+        <!-- Stat strip -->
+        <div class="grid grid-cols-3 gap-3">
+          <div class="glass lift p-3.5 sm:p-4">
+            <p class="stat-label"><i class="fa-solid fa-arrow-trend-down mr-1 text-rose-400/70"></i>Spent</p>
+            <p id="statSpent" class="stat-value text-rose-300">¥0.00</p>
+          </div>
+          <div class="glass lift p-3.5 sm:p-4">
+            <p class="stat-label"><i class="fa-solid fa-arrow-trend-up mr-1 text-emerald-400/70"></i>Remaining</p>
+            <p id="statRemaining" class="stat-value text-emerald-300">¥0.00</p>
+          </div>
+          <div class="glass lift p-3.5 sm:p-4">
+            <p class="stat-label"><i class="fa-solid fa-receipt mr-1 text-cyan-400/70"></i>Logged</p>
+            <p id="statCount" class="stat-value text-cyan-300">0</p>
+          </div>
+        </div>
+
+        <!-- Category breakdown -->
+        <div class="glass lift p-4 sm:p-5">
+          <div class="flex items-start justify-between gap-3">
+            <div>
+              <h3 class="card-title">Category Breakdown</h3>
+              <p class="card-sub">This month's spend distribution</p>
+            </div>
+            <span class="flex h-8 w-8 items-center justify-center rounded-lg border border-cyan-500/25 bg-cyan-500/10 text-[11px] text-cyan-400">
+              <i class="fa-solid fa-chart-pie"></i>
+            </span>
+          </div>
+          <div class="chart-wrap"><canvas id="categoryChart" aria-label="Spending by category doughnut chart"></canvas></div>
+          <div id="chartLegend" class="mt-3 space-y-1"></div>
+        </div>
+
+        <!-- Budget limits -->
+        <div class="glass lift p-4 sm:p-5">
+          <div class="flex items-center justify-between">
+            <div>
+              <h3 class="card-title">Category Budget Limits</h3>
+              <p class="card-sub">Monthly caps with live status</p>
+            </div>
+            <span class="flex h-8 w-8 items-center justify-center rounded-lg border border-emerald-500/25 bg-emerald-500/10 text-[11px] text-emerald-400">
+              <i class="fa-solid fa-gauge-high"></i>
+            </span>
+          </div>
+          <div id="budgetList" class="mt-4 space-y-4"></div>
+        </div>
+
+        <!-- Recent expenses -->
+        <div class="glass lift p-4 sm:p-5">
+          <div class="flex items-center justify-between">
+            <div>
+              <h3 class="card-title">Recent Expenses Logged</h3>
+              <p class="card-sub">Newest first · synced with chat</p>
+            </div>
+            <span id="txCount" class="rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2 py-0.5 font-mono text-[10px] text-emerald-300">0</span>
+          </div>
+          <div class="thin-scroll mt-3 max-h-[320px] overflow-auto">
+            <table class="w-full min-w-[400px] text-sm">
+              <thead>
+                <tr>
+                  <th class="tx-head">Merchant</th>
+                  <th class="tx-head">Category</th>
+                  <th class="tx-head">Status</th>
+                  <th class="tx-head text-right">Amount</th>
+                </tr>
+              </thead>
+              <tbody id="txBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </aside>
+    </main>
+
+    <!-- Webhook config modal -->
+    <div id="modalOverlay" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <div class="modal-card glass">
+        <div class="flex items-start justify-between gap-3">
+          <div class="flex items-center gap-3">
+            <span class="icon-tile ico--cy"><i class="fa-solid fa-link"></i></span>
+            <div>
+              <h3 id="modalTitle" class="font-display text-base font-semibold text-slate-50">Webhook Configuration</h3>
+              <p class="modal-sub">Connect your n8n agent endpoint</p>
+            </div>
+          </div>
+          <button id="modalClose" class="icon-btn" aria-label="Close dialog"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+
+        <form id="webhookForm" class="mt-5 space-y-4">
+          <div>
+            <label class="field-label" for="webhookInput">n8n Webhook Endpoint URL</label>
+            <input id="webhookInput" type="url" class="field-input" placeholder="https://your-n8n.host/webhook/finagent" autocomplete="off" spellcheck="false" />
+            <p class="hint">POST payload: <code>{ chatInput, image, sessionId, userId, timestamp }</code>. The reply is read from <code>output</code>, <code>reply</code>, <code>text</code> or <code>message</code>. Leave empty to run the local fallback agent.</p>
+          </div>
+          <div class="flex flex-wrap justify-end gap-2 pt-1">
+            <button type="button" id="testWebhook" class="ghost-btn"><i class="fa-solid fa-plug"></i> Test Connection</button>
+            <button type="button" id="modalCancel" class="ghost-btn">Cancel</button>
+            <button type="submit" class="primary-btn"><i class="fa-solid fa-check"></i> Save Endpoint</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast stack -->
+  <div id="toastBox" class="fixed right-4 top-20 z-[70] w-[min(92vw,340px)] space-y-2"></div>
+
+  <script src="script.js"></script>
+</body>
+</html>
