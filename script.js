@@ -67,7 +67,7 @@
     Utilities: ['utilit', 'electric', 'power', 'water bill', 'gas bill', 'internet', 'wifi', 'broadband', 'phone bill', 'unicom', 'recharge', 'bill'],
     Transport: ['transport', 'uber', 'lyft', 'didi', 'taxi', 'fuel', 'petrol', 'gas station', 'metro', 'subway', 'parking', 'train', 'bus', 'shell', 'chevron', 'rickshaw', 'cng', 'ticket', 'launch'],
     Shopping:  ['shopping', 'amazon', 'uniqlo', 'zara', "h&m", 'clothes', 'clothing', 'shoes', 'sneakers', 'electronics', 'mall', 'ikea', 'target', 'shirt', 'pants', 'dress', 'saree', 'cosmetics', 'makeup', 'bata', 'bag'],
-    Education: ['education', 'tuition', 'school', 'college', 'university', 'course', 'book', 'exam', 'study', 'stationery', 'coaching', 'admission'],
+    Education: ['education', 'tuition', 'school', 'college', 'university', 'course', 'book', 'exam', 'study', 'stationery', 'coaching', 'admission', 'photocopy', 'photo copy', 'xerox', 'printout', 'printing', 'notes', 'notebook', 'pencil'],
     Health:    ['health', 'medicine', 'doctor', 'hospital', 'pharmacy', 'clinic', 'treatment'],
     Travel:    ['travel', 'trip', 'tour', 'hotel', 'flight', 'vacation'],
     Rent:      ['rent', 'flat', 'accommodation'],
@@ -87,7 +87,7 @@
     Transport: ['bus', 'metro', 'subway', 'train', 'uber', 'taxi', 'didi', 'rickshaw', 'cng', 'fuel', 'petrol', 'ticket', 'launch', 'parking'],
     Travel:    ['trip', 'tour', 'hotel', 'flight', 'vacation', 'travel'],
     Shopping:  ['clothes', 'clothing', 'shoes', 'shirt', 'pants', 'dress', 'saree', 'mall', 'cosmetics', 'makeup', 'bag', 'bata', 'uniqlo', 'zara', 'amazon', 'sneakers'],
-    Education: ['tuition', 'school', 'college', 'university', 'course', 'study', 'book', 'exam', 'stationery', 'coaching', 'admission', 'education'],
+    Education: ['tuition', 'school', 'college', 'university', 'course', 'study', 'book', 'exam', 'stationery', 'coaching', 'admission', 'education', 'photocopy', 'photo copy', 'xerox', 'printout', 'printing', 'notes', 'notebook', 'pencil'],
     Health:    ['medicine', 'doctor', 'hospital', 'pharmacy', 'clinic', 'treatment', 'health'],
     Rent:      ['rent', 'flat', 'accommodation'],
     Savings:   ['saving', 'deposit'],
@@ -108,9 +108,21 @@
   function matchTrainedCategory(text) {
     if (!text || !Object.keys(CATEGORIES).length) return null;
     const t = ' ' + text.toLowerCase() + ' ';
-    for (const name of Object.keys(CATEGORIES))
-      if (wordHit(t, name.toLowerCase()) || stem(t.trim()) === stem(name)) return name;
-    const keys = Object.keys(CATEGORIES).sort((a, b) =>
+    const names = Object.keys(CATEGORIES);
+    const hit = name => wordHit(t, name.toLowerCase()) || stem(t.trim()) === stem(name);
+    /* PRIORITY 1+2 — BUDGET-trained umbrellas first: exact/stem name, then
+       their synonyms. A budgeted Education claims "photocopy shopping" even
+       when a 0-limit junk bucket (Shopping) is also mentioned. */
+    const budgeted = names.filter(n => (CATEGORIES[n].budget || 0) > 0);
+    for (const name of budgeted) if (hit(name)) return name;
+    const bSorted = [...budgeted].sort((a, b) =>
+      (UMBRELLA_FIRST.has(b.toLowerCase()) ? 1 : 0) - (UMBRELLA_FIRST.has(a.toLowerCase()) ? 1 : 0));
+    for (const name of bSorted)
+      for (const s of (CATEGORY_SYNONYMS[name] || []))
+        if (t.includes(s)) return name;
+    /* PRIORITY 3+4 — then everything else (old behavior, umbrella-first) */
+    for (const name of names) if (hit(name)) return name;
+    const keys = [...names].sort((a, b) =>
       (UMBRELLA_FIRST.has(b.toLowerCase()) ? 1 : 0) - (UMBRELLA_FIRST.has(a.toLowerCase()) ? 1 : 0));
     for (const name of keys)
       for (const s of (CATEGORY_SYNONYMS[name] || []))
@@ -375,8 +387,18 @@
                           : (detectCategory(String(r.merchant ?? '')) || 'Misc');
     /* roll loose sheet categories onto the user's BUDGET umbrella first —
        "Dining" / "Grocery" / "Takeout" rows deduct from Food when Food
-       carries the user's limit; trained-name matching stays as fallback */
-    const rolled = rollToBudgeted(category) || matchTrainedCategory(category);
+       carries the user's limit. NOTE: only rollToBudgeted() gates the
+       merchant rescue — matchTrainedCategory would happily return the
+       junk 0-limit self-name ("Shopping") and block the second chance. */
+    let rolled = rollToBudgeted(category);
+    /* second chance — a sheet category that claims nowhere may still be
+       rescueable through its merchant: a "Shopping" row bought at a
+       photocopy/print shop rolls into Education once photocopy maps there */
+    if (!rolled) {
+      const merchCat = detectCategory(String(r.merchant ?? r.Merchant ?? ''));
+      if (merchCat) rolled = rollToBudgeted(merchCat);
+    }
+    if (!rolled) rolled = matchTrainedCategory(category);   /* trained-name fallback */
     if (rolled) category = rolled;
     addCategory(category, 0);
 
@@ -1174,7 +1196,7 @@ Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining bud
     Dining:        'restaurants, KFC, cafes, food, takeout, delivery',
     Transport:     'bus, metro, subway, taxi, Uber/DiDi, rickshaw, CNG, fuel, parking, train tickets',
     Shopping:      'clothes, shoes, electronics, mall and online orders',
-    Education:     'tuition, books, courses, coaching, school/admission fees, stationery',
+    Education:     'tuition, books, courses, coaching, school/admission fees, stationery, photocopy, xerox, printouts, notes, exam fees',
     Health:        'medicine, doctor visits, hospital, pharmacy, clinic',
     Utilities:     'electricity, water, gas, internet, wifi, phone bills, recharge',
     Rent:          'flat rent, accommodation',
