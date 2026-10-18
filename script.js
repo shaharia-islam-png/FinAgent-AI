@@ -560,16 +560,21 @@
     const p = await apiPost('getProfile', { userId: currentUser.email });
     if (p.ok && p.profile && typeof p.profile === 'object') {
       const tag = emailTag(p.profile);
-      if (!tag || tag === currentUser.email.toLowerCase()) {
-        const inc = Number(p.profile.income) || 0;
-        /* an untagged read that DISAGREES with this device may belong to a
-           stranger — never overwrite the user's own income with it */
-        if (!(inc > 0 && profile.income > 0 && profile.income !== inc && !tag)) {
-          profile.income = inc > 0 ? inc : 0;
-          profile.onboarded = !!p.profile.onboarded || inc > 0;
-          saveProfileLocal();
-          refreshDashboard();
-        }
+      const inc = Number(p.profile.income) || 0;
+      /* Ownership rule — mirrors the budgets policy. A profile row TAGGED
+         with this email is authoritative. An UNTAGGED Profile read (one
+         shared sheet, no userId column) can only CONFIRM what this device
+         already holds: it may never CREATE income inside a fresh account
+         (that is how a stranger's salary could leak in), and a missing or
+         disagreeing read never erases the device's own truth. */
+      if (tag === currentUser.email.toLowerCase()) {
+        profile.income = inc > 0 ? inc : 0;
+        profile.onboarded = !!p.profile.onboarded || inc > 0;
+        saveProfileLocal();
+        refreshDashboard();
+      } else if (!tag && profile.income > 0 && inc === profile.income) {
+        profile.onboarded = !!p.profile.onboarded || profile.onboarded;
+        saveProfileLocal();
       }
     }
 
@@ -1946,6 +1951,13 @@ Ask me anything, or tap a quick chip below.`);
     buildBudgetRows();
     renderChips();
     bindEvents();
+
+    /* deploy verification — the browser TAB title shows the build instantly
+       (no DevTools, no Ctrl+F needed). If the tab does not say v8, the site
+       is still serving the OLD script.js — re-deploy and hard-refresh. */
+    document.title = 'FinAgent AI · v8';
+    console.log(`%c${BUILD_TAG} — per-user isolation + receipt OCR LIVE`,
+      'background:#10B981;color:#0B0F19;font-weight:bold;padding:2px 8px;border-radius:4px');
 
     try {
       const raw = localStorage.getItem(SESSION_KEY);
