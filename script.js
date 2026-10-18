@@ -12,7 +12,7 @@
 
   /* BUILD TAG — Ctrl+F this string on the LIVE /script.js after deploying
      to prove the new file is really being served (Netlify caches hard). */
-  const BUILD_TAG = 'finagent-v8.2-clean-cache';
+  const BUILD_TAG = 'finagent-v8.3-auth-fallback';
   /* CACHE_VERSION — bump this to force EVERY device to discard its old
      local snapshot once. v8.2 = 8: pre-v8 caches may hold categories the
      old buggy sync adopted from a shared sheet (a stranger's budgets
@@ -807,6 +807,36 @@ Check: the **setBudget** branch in n8n (Switch rule → Budget Append → Respon
     enterApp({ name, email });
   }
 
+  /* =====================================================================
+     AUTH VERDICT — one tolerant classifier for both auth endpoints.
+     The n8n register/login branches answer in several shapes ({ok:true,
+     user:{…}, the exists/invalid flag pair, the appended Sheets row,
+     plain text) — and a BROKEN workflow answers HTTP 500. Policy:
+       • unreachable / HTTP 5xx  → engine is DOWN → local mode (never
+         block the demo on a dead engine);
+       • HTTP 4xx / ok:false     → engine understood and REFUSED → error;
+       • HTTP 200                → the branch ran → read the exists/
+         invalid flags when present (register: exists=true means the
+         email is already taken; login: exists=false / invalid=true are
+         the real rejection signals), otherwise ACCEPT.
+  ===================================================================== */
+  function authVerdict(res, forRegister = false) {
+    if (!res) return 'broken';
+    if (res.local) return 'local';
+    if (res.unreachable) return 'broken';
+    if (res.httpError) return res.httpError >= 500 ? 'broken' : 'refused';
+    if (res.ok === false) return 'refused';
+    /* HTTP 200 family — merge the user object (flags may ride inside it) */
+    const src = (res.user && typeof res.user === 'object') ? { ...res.user, ...res } : res;
+    if (forRegister) {
+      if (src.exists === true) return 'refused';   /* email already registered */
+    } else {
+      if (src.exists === false) return 'no-account';
+      if (src.invalid === true) return 'bad-password';
+    }
+    return 'ok';
+  }
+
   async function handleLogin(e) {
     e.preventDefault();
     clearFormErrors();
@@ -817,17 +847,22 @@ Check: the **setBudget** branch in n8n (Switch rule → Budget Append → Respon
     const res = await apiPost('login', { email, password: pw });
     setAuthBusy(loginSubmitBtn, false);
 
-    if (res.local)       return localLogin(email, pw);
-    if (res.unreachable) {
-      toast('error', `Auth engine unreachable (${res.error}) — using local mode.`);
+    const verdict = authVerdict(res, false);
+    if (verdict === 'local' || verdict === 'broken') {
+      if (verdict === 'broken') {
+        toast('error', `Auth engine failed (${res.unreachable ? res.error : 'HTTP ' + res.httpError}) — using local mode.`);
+      }
       return localLogin(email, pw);
     }
-    if (res.ok && res.user) {
-      toast('success', `Welcome back, ${String(res.user.name).split(' ')[0]}!`);
-      enterApp({ name: res.user.name, email: res.user.email });
-    } else {
-      showFormError(loginError, res.error || 'Auth engine response not understood.');
-    }
+    if (verdict === 'refused') return showFormError(loginError, res.error || 'Auth engine refused the login.');
+    if (verdict === 'no-account') return showFormError(loginError, 'No account found for that email. Register first.');
+    if (verdict === 'bad-password') return showFormError(loginError, 'Incorrect password. Try again.');
+    /* verdict ok — 200 and no rejection flag */
+    const lower = email.toLowerCase();
+    const local = getUsers().find(u => u.email === lower);
+    const name = (res.user && res.user.name) || (local && local.name) || lower.split('@')[0];
+    toast('success', `Welcome back, ${String(name).split(' ')[0]}!`);
+    enterApp({ name, email: (res.user && res.user.email) || lower });
   }
 
   async function handleRegister(e) {
@@ -842,17 +877,22 @@ Check: the **setBudget** branch in n8n (Switch rule → Budget Append → Respon
     const res = await apiPost('register', { name, email, password: pw });
     setAuthBusy(regSubmitBtn, false);
 
-    if (res.local)       return localRegister(name, email, pw);
-    if (res.unreachable) {
-      toast('error', `Auth engine unreachable (${res.error}) — using local mode.`);
+    const verdict = authVerdict(res, true);
+    if (verdict === 'local' || verdict === 'broken') {
+      if (verdict === 'broken') {
+        toast('error', `Auth engine failed (${res.unreachable ? res.error : 'HTTP ' + res.httpError}) — account created on this device instead.`);
+      }
       return localRegister(name, email, pw);
     }
-    if (res.ok && res.user) {
-      toast('success', `Account created — welcome, ${String(res.user.name).split(' ')[0]}!`);
-      enterApp({ name: res.user.name, email: res.user.email });
-    } else {
-      showFormError(regError, res.error || 'Auth engine response not understood.');
+    if (verdict === 'refused') {
+      return showFormError(regError, res.error || 'That email is already registered — try logging in.');
     }
+    /* verdict ok — ANY 200 counts: {ok:true}, the appended Sheets row,
+       {exists:false, invalid:false} flags, plain text. The old code
+       demanded res.user and wrongly showed "response not understood"
+       AFTER the row had already landed in Google Sheets. */
+    toast('success', `Account created — welcome, ${String((res.user && res.user.name) || name).split(' ')[0]}!`);
+    enterApp({ name: (res.user && res.user.name) || name, email: (res.user && res.user.email) || email });
   }
 
   function handleLogout() {
