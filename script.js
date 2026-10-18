@@ -353,12 +353,17 @@
     } catch { /* quota — non-fatal */ }
   }
   function loadCategoriesLocal(email) {
+    /* HARD RESET before any early return — switching accounts on one
+       browser must NEVER inherit the previous user's in-memory buckets
+       (a fresh user has no cache; the old early-return kept user A's
+       categories alive inside user B's session). */
+    CATEGORIES = {};
+    paletteIdx = 0; iconIdx = 0;
     try {
       const raw = localStorage.getItem(catKey(email));
       if (!raw) return;
       const saved = JSON.parse(raw);
       if (!saved || typeof saved !== 'object') return;
-      CATEGORIES = {};
       for (const [k, v] of Object.entries(saved.cats || {})) {
         if (!v || typeof v !== 'object') continue;
         CATEGORIES[k] = {
@@ -429,7 +434,14 @@
     /* 1 · EXPENSES — engine truth, even when empty */
     const res = await apiPost('getExpenses', { userId: currentUser.email });
     if (res.ok && Array.isArray(res.expenses)) {
-      const list = res.expenses.map(normalizeServerExpense).filter(Boolean);
+      /* defense in depth — if the engine ever returns rows belonging to
+         OTHER users (unfiltered Sheets read), drop everything that is not
+         addressed to the signed-in email. Rows without a userId field pass. */
+      const mine = r => {
+        const u = String((r && (r.userId ?? r.UserID ?? r.User)) ?? '').trim().toLowerCase();
+        return !u || u === currentUser.email.toLowerCase();
+      };
+      const list = res.expenses.filter(mine).map(normalizeServerExpense).filter(Boolean);
       /* ledger canonicalization — budgeted umbrellas claim near-duplicate
          sheet categories ("Dining" rows count toward the user's Food limit) */
       for (const e of list) {
@@ -1174,8 +1186,8 @@ Expected one of \`output\`, \`reply\`, \`text\` or \`message\` in the JSON respo
   }
 
   function imageOnlyReply() {
-    return `Receipt received and staged for review.
-• Connect your **n8n webhook** (gear icon, top-right) to forward the base64 image for OCR extraction.
+    return `Receipt received. I could not reach the engine to read it right now.
+• Check the engine badge (top-right) — n8n must be **Active** and its workflow needs a Gemini vision branch for images.
 • Meanwhile you can log it manually — e.g. *"Spent ${CUR}23.50 at Whole Foods"*`;
   }
 
@@ -1227,6 +1239,14 @@ Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining bud
       .map(n => `${n} absorbs: ${ROLL_HINTS[n]}`)
       .join(' | ');
     return `\n\n[FinAgent system note — follow strictly when logging to the sheet: Category MUST be exactly one of the user's own categories: ${cats.join(', ')}. Pick the closest match; NEVER invent a near-duplicate or parallel category (no "Dining" when Food exists, no "Grocery" when Food/Groceries exists), and never use "Miscellaneous" unless nothing fits. If the user says "other purposes", "miscellaneous" or unspecified spending, the category MUST be their "Other" category when one exists — never "Shopping".${absorb ? ' Roll-ups: ' + absorb + '.' : ''} Currency is CNY: write amounts as ¥xx, never $.]`;
+  }
+
+  /* appended to image (receipt) messages — the engine must READ the
+     picture and log from the user's own categories, never invent one.
+     With the sheet write using this category, the app's roll-up deducts
+     from the right budget automatically on the next sync. */
+  function receiptGuidance() {
+    return `\n\n[FinAgent receipt note — the user attached a receipt/payment screenshot. Read the image: extract the TOTAL amount actually paid, the merchant/store name, and the date. Log it as ONE expense for this user. Amount in CNY, write ¥xx. Category MUST be exactly one of the user's own categories (see the FinAgent system note) — pick the closest match. If the total is unreadable or ambiguous, ask the user instead of guessing.]`;
   }
 
   /* =====================================================================
@@ -1383,8 +1403,9 @@ Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining bud
       try {
         reply = await callWebhook({
           action: 'chat',
-          chatInput: (text || 'Receipt image attached for processing')
-            + ((exp || /spent|paid|bought|cost|logged|expense/i.test(text || '')) ? categoryGuidance() : ''),
+          chatInput: (text || 'Please log this receipt as an expense.')
+            + ((exp || image || /spent|paid|bought|cost|logged|expense/i.test(text || '')) ? categoryGuidance() : '')
+            + (image ? receiptGuidance() : ''),
           image: image || null,
           sessionId,
           userId: currentUser.email,
@@ -1422,6 +1443,7 @@ Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining bud
 
   /* ------------------------------ attachment ------------------------------ */
   function showAttachPreview(name, dataUrl) {
+    if (!attachPreview) return;
     attachPreview.classList.remove('hidden');
     attachPreview.innerHTML = `
       <div class="attach-chip">
@@ -1440,10 +1462,9 @@ Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining bud
 
   function clearAttach() {
     pendingImage = null;
-    attachPreview.classList.add('hidden');
-    attachPreview.innerHTML = '';
-    receiptInput.value = '';
-    attachBtn.classList.remove('active');
+    if (attachPreview) { attachPreview.classList.add('hidden'); attachPreview.innerHTML = ''; }
+    if (receiptInput) receiptInput.value = '';
+    if (attachBtn)     attachBtn.classList.remove('active');
   }
 
   /* =====================================================================
@@ -1568,7 +1589,12 @@ Ask me anything, or tap a quick chip below.`);
       toast('info', 'Conversation cleared.');
     });
 
-    receiptInput.addEventListener('change', e => {
+    /* paperclip opens the file picker — skipped when index.html already
+       triggers it (label wrap or inline onclick), so it never opens twice */
+    if (attachBtn && receiptInput && !attachBtn.closest('label') && !attachBtn.getAttribute('onclick'))
+      attachBtn.addEventListener('click', e => { e.preventDefault(); receiptInput.click(); });
+
+    if (receiptInput) receiptInput.addEventListener('change', e => {
       const f = e.target.files[0];
       if (!f) return;
       if (!f.type.startsWith('image/')) { toast('error', 'Please attach an image file.'); return; }
