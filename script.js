@@ -12,7 +12,13 @@
 
   /* BUILD TAG — Ctrl+F this string on the LIVE /script.js after deploying
      to prove the new file is really being served (Netlify caches hard). */
-  const BUILD_TAG = 'finagent-v8-isolation-ocr';
+  const BUILD_TAG = 'finagent-v8.2-clean-cache';
+  /* CACHE_VERSION — bump this to force EVERY device to discard its old
+     local snapshot once. v8.2 = 8: pre-v8 caches may hold categories the
+     old buggy sync adopted from a shared sheet (a stranger's budgets
+     inside this account) — deleting sheet rows does NOT clear them,
+     which is exactly the "I deleted all the data, it still shows" bug. */
+  const CACHE_VERSION = 8;
 
   /* ------------------------------ storage keys ------------------------------ */
   const USERS_KEY    = 'finagent_users_v1';
@@ -354,7 +360,7 @@
       for (const [k, v] of Object.entries(CATEGORIES))
         cats[k] = { budget: Number(v.budget) || 0, color: v.color, icon: v.icon };
       localStorage.setItem(catKey(currentUser.email),
-        JSON.stringify({ cats, paletteIdx, iconIdx }));
+        JSON.stringify({ v: CACHE_VERSION, cats, paletteIdx, iconIdx }));
     } catch { /* quota — non-fatal */ }
   }
   function loadCategoriesLocal(email) {
@@ -369,6 +375,12 @@
       if (!raw) return;
       const saved = JSON.parse(raw);
       if (!saved || typeof saved !== 'object') return;
+      /* CACHE SELF-HEAL — a snapshot written by an OLDER build carries no
+         version marker and may hold categories the previous buggy sync
+         adopted from a shared sheet (another user's limits inside THIS
+         account). Discard it once; the account retrains fresh and every
+         cache saved from now on carries CACHE_VERSION and is trusted. */
+      if (Number(saved.v) !== CACHE_VERSION) return;
       for (const [k, v] of Object.entries(saved.cats || {})) {
         if (!v || typeof v !== 'object') continue;
         CATEGORIES[k] = {
@@ -501,7 +513,10 @@
     }
     if (!rolled) rolled = matchTrainedCategory(category);   /* trained-name fallback */
     if (rolled) category = rolled;
-    addCategory(category, 0);
+    /* NOTE: no addCategory here (v8.2) — normalizeServerExpense runs on
+       every sheet row BEFORE ownership adoption, so calling it seeded
+       0-limit phantom buckets (and cache writes) from FOREIGN rows.
+       Buckets are created after the merge, for owned entries only. */
 
     let ts = Date.parse(r.ts ?? r.date ?? r.Date ?? '');
     if (!isFinite(ts)) ts = Date.now();
@@ -530,6 +545,10 @@
       }
       const adopted = list.filter(e => localLedger.some(le => sameSpend(le, e)));
       expenses = mergeLedgers(localLedger, adopted);
+      /* buckets for spending we ACTUALLY own — foreign sheet rows can no
+         longer seed categories into this account's panel or cache */
+      for (const e of expenses)
+        if (!CATEGORIES[e.category]) addCategory(e.category, 0);
       saveData();
       pruneEmptyCategories();      /* drop 0-limit buckets the roll emptied */
       refreshDashboard();
