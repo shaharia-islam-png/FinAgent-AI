@@ -10,6 +10,10 @@
 ===================================================================== */
 (() => {
 
+  /* BUILD TAG — Ctrl+F this string on the LIVE /script.js after deploying
+     to prove the new file is really being served (Netlify caches hard). */
+  const BUILD_TAG = 'finagent-v8-isolation-ocr';
+
   /* ------------------------------ storage keys ------------------------------ */
   const USERS_KEY    = 'finagent_users_v1';
   const SESSION_KEY  = 'finagent_session_v1';
@@ -179,6 +183,7 @@
   let hintedLocal = false;
   let engineSynced = false;
   let pendingImage = null;
+  let pendingReceipt = null;   /* receipt read by OCR — amount known, category pending */
   let typingRow = null;
   let sessionId = '';
   const lastLevel = {};
@@ -382,8 +387,85 @@
   const hasTrainedBudgets = () => Object.values(CATEGORIES).some(c => (c.budget || 0) > 0);
 
   /* =====================================================================
-     ENGINE SYNC — Google Sheets is the ONLY source of data.
-     Whatever the engine returns (even empty) replaces local state.
+     PER-USER OWNERSHIP — the app's self-defense against an unfiltered
+     Google Sheets read. The n8n read nodes may return EVERY user's rows
+     (shared sheet, no userId column, no filter); adopting them leaked
+     user A's budgets into user B's panel. Policy from v8:
+       • rows TAGGED with a user id → adopted only when it is OURS;
+       • rows with NO user tag      → can NEVER create or change anything.
+     The per-email local snapshot (what THIS account trained HERE) is the
+     ownership truth, so a brand-new user sees a CLEAN panel instead of a
+     stranger's budgets. If the n8n writes/reads ever carry userId columns,
+     tagged rows flow through automatically — full multi-device sync.
+  ===================================================================== */
+
+  /* any user-id-ish field a sheet row / profile row may carry */
+  function emailTag(r) {
+    if (!r || typeof r !== 'object') return '';
+    return String(r.userId ?? r.UserID ?? r.User ?? r.userEmail ?? r.user ?? r.email ?? r.Email ?? '')
+      .trim().toLowerCase();
+  }
+
+  /* do two ledger entries describe the SAME spend? (ownership print + dedupe)
+     amount within 1 paisa, logged/sheet-dated within 36 h, and the rolled
+     category matches — or the merchant names overlap when the sheet wrote
+     a near-duplicate category. */
+  function sameSpend(a, b) {
+    if (!a || !b) return false;
+    if (Math.abs(Number(a.amount) - Number(b.amount)) > 0.011) return false;
+    if (Math.abs(Number(a.ts) - Number(b.ts)) > 36 * 3600 * 1000) return false;
+    const ca = rollToBudgeted(a.category) || a.category;
+    const cb = rollToBudgeted(b.category) || b.category;
+    if (ca === cb) return true;
+    const ta = String(a.merchant || '').toLowerCase().split(/\s+/).filter(w => w.length > 2);
+    const tb = String(b.merchant || '').toLowerCase().split(/\s+/).filter(w => w.length > 2);
+    return ta.some(w => tb.includes(w));
+  }
+
+  /* ledger merge — the user's LOCAL entries always survive (an engine
+     outage or a foreign sheet read must never wipe what was logged here);
+     adopted sheet rows join once, deduped by spend print. A local entry
+     the sheet confirmed flips to "Synced". */
+  function mergeLedgers(local, adopted) {
+    const out = (local || []).map(e => ({ ...e }));
+    for (const a of (adopted || [])) {
+      const hit = out.find(l => sameSpend(l, a));
+      if (hit) { if (a.status === 'synced') hit.status = 'synced'; continue; }
+      out.push({ ...a });
+    }
+    return out.sort((x, y) => x.ts - y.ts);
+  }
+
+  /* getBudgets read-back — decide which entries may touch CATEGORIES.
+     Accepts the aggregate object {Food: 800, ...} OR a rows array
+     [{category, limit, userId}, ...]. ONLY entries tagged with THIS
+     user's id may create or update a category. Untagged aggregates mix
+     every user's limits — adopting them is the leak this kills. */
+  function adoptRemoteBudgets(b, email) {
+    const mine = String(email || '').trim().toLowerCase();
+    const rows = [];
+    const pushRow = (name, lim, tag) => {
+      if (!tag || tag !== mine) return;
+      const n = Number(lim);
+      const nm = String(name ?? '').trim();
+      if (!nm || !Number.isFinite(n) || n <= 0) return;
+      rows.push({ name: nm, limit: n });
+    };
+    if (Array.isArray(b)) {
+      for (const r of b) if (r && typeof r === 'object')
+        pushRow(r.category ?? r.Category, r.limit ?? r.Limit ?? r.budget ?? r.Budget, emailTag(r));
+    } else if (b && typeof b === 'object') {
+      for (const [k, v] of Object.entries(b)) {
+        if (v && typeof v === 'object') pushRow(k, v.limit ?? v.budget ?? v.Limit ?? v.Budget, emailTag(v));
+        else pushRow(k, v, '');                      /* plain number → untagged */
+      }
+    }
+    return rows;
+  }
+
+  /* =====================================================================
+     ENGINE SYNC — Google Sheets feeds the ledger through the OWNERSHIP
+     filter above; the user's own trained snapshot can never be stolen.
   ===================================================================== */
   function normalizeServerExpense(r) {
     if (!r || typeof r !== 'object') return null;
@@ -431,16 +513,14 @@
   async function syncFromEngine({ silent = true } = {}) {
     if (!currentUser || !getWebhook()) return;
 
-    /* 1 · EXPENSES — engine truth, even when empty */
+    /* 1 · EXPENSES — OWNERSHIP merge. Tagged rows must carry THIS user's
+       id; untagged rows are adopted only when they match an entry the
+       user already holds (amount + 36 h + rolled category) — a shared
+       unfiltered sheet can never push a stranger's spending in. */
     const res = await apiPost('getExpenses', { userId: currentUser.email });
     if (res.ok && Array.isArray(res.expenses)) {
-      /* defense in depth — if the engine ever returns rows belonging to
-         OTHER users (unfiltered Sheets read), drop everything that is not
-         addressed to the signed-in email. Rows without a userId field pass. */
-      const mine = r => {
-        const u = String((r && (r.userId ?? r.UserID ?? r.User)) ?? '').trim().toLowerCase();
-        return !u || u === currentUser.email.toLowerCase();
-      };
+      const mine = r => { const u = emailTag(r); return !u || u === currentUser.email.toLowerCase(); };
+      const localLedger = expenses;                    /* ownership prints */
       const list = res.expenses.filter(mine).map(normalizeServerExpense).filter(Boolean);
       /* ledger canonicalization — budgeted umbrellas claim near-duplicate
          sheet categories ("Dining" rows count toward the user's Food limit) */
@@ -448,13 +528,15 @@
         const c = rollToBudgeted(e.category);
         if (c && c !== e.category) e.category = c;
       }
-      expenses = list;
+      const adopted = list.filter(e => localLedger.some(le => sameSpend(le, e)));
+      expenses = mergeLedgers(localLedger, adopted);
       saveData();
       pruneEmptyCategories();      /* drop 0-limit buckets the roll emptied */
       refreshDashboard();
-      if (list.length) {
+      const gained = expenses.length - localLedger.length;
+      if (gained > 0) {
         if (!silent || !engineSynced) {
-          toast('success', `Engine synced — ${list.length} expense${list.length > 1 ? 's' : ''} loaded.`);
+          toast('success', `Engine synced — ${gained} expense${gained > 1 ? 's' : ''} loaded.`);
         }
       } else if (!silent) {
         toast('info', 'Engine synced — fresh start. Train me with your budget!');
@@ -476,23 +558,32 @@
     if (!currentUser || !getWebhook()) return;
 
     const p = await apiPost('getProfile', { userId: currentUser.email });
-    if (p.ok && p.profile) {
-      const inc = Number(p.profile.income) || 0;
-      profile.income = inc > 0 ? inc : 0;
-      profile.onboarded = !!p.profile.onboarded || inc > 0;
-      saveProfileLocal();
-      refreshDashboard();
+    if (p.ok && p.profile && typeof p.profile === 'object') {
+      const tag = emailTag(p.profile);
+      if (!tag || tag === currentUser.email.toLowerCase()) {
+        const inc = Number(p.profile.income) || 0;
+        /* an untagged read that DISAGREES with this device may belong to a
+           stranger — never overwrite the user's own income with it */
+        if (!(inc > 0 && profile.income > 0 && profile.income !== inc && !tag)) {
+          profile.income = inc > 0 ? inc : 0;
+          profile.onboarded = !!p.profile.onboarded || inc > 0;
+          saveProfileLocal();
+          refreshDashboard();
+        }
+      }
     }
 
+    /* budgets — ONLY rows tagged with this user's id may create or change
+       a category. Untagged getBudgets aggregates (one shared sheet, no
+       userId column) mix every user's limits; adopting them is exactly
+       what leaked user A's trained budgets into user B's clean panel. */
     const b = await apiPost('getBudgets', { userId: currentUser.email });
-    if (b.ok && b.budgets && typeof b.budgets === 'object') {
+    if (b.ok && b.budgets) {
       let changed = false;
-      for (const [k, v] of Object.entries(b.budgets)) {
-        const lim = Number(v);
-        if (!isFinite(lim) || lim <= 0) continue;
-        const before = CATEGORIES[k] ? CATEGORIES[k].budget : -1;
-        addCategory(k, lim);
-        if (CATEGORIES[k].budget !== before) changed = true;
+      for (const row of adoptRemoteBudgets(b.budgets, currentUser.email)) {
+        const before = CATEGORIES[row.name] ? CATEGORIES[row.name].budget : -1;
+        addCategory(row.name, row.limit);
+        if (CATEGORIES[row.name] && CATEGORIES[row.name].budget !== before) changed = true;
       }
       if (changed) { buildBudgetRows(); refreshDashboard(); }
     }
@@ -1371,6 +1462,132 @@ Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining bud
       : '<i class="fa-solid fa-paper-plane"></i>';
   }
 
+  /* =====================================================================
+     RECEIPT OCR — the photo is read IN THE BROWSER (Tesseract.js from
+     CDN, lazy-loaded on first use), so "attach pic → read the price →
+     deduct from the right budget" needs ZERO n8n changes. The engine is
+     merely TOLD what landed so its Sheets write stays consistent.
+  ===================================================================== */
+
+  /* receipt text → { amount, merchant, category|null } | null  (pure) */
+  function parseReceiptText(text) {
+    const clean = String(text || '').replace(/\r/g, '');
+    if (!clean.trim()) return null;
+    const lines = clean.split('\n').map(l => l.trim()).filter(Boolean);
+
+    /* dates / phones / reference numbers poison number-picking — scrub them */
+    const scrub = l => String(l)
+      .replace(/\b\d{1,4}[-/.]\d{1,4}[-/.]\d{2,4}\b/g, ' ')   /* 16/10/2026 · 2026-10-16 */
+      .replace(/\b\d{7,}\b/g, ' ')                             /* phones, TRN, invoice ids */
+      .replace(/\b\d{1,2}:\d{2}(?::\d{2})?\b/g, ' ');          /* times */
+    const grab = l => {
+      const m = scrub(l).match(/\d[\d,]*(?:\.\d{1,2})?/g);
+      return m ? m.map(s => Number(String(s).replace(/,/g, ''))) : [];
+    };
+
+    /* 1 · amount — grand-total lines win, then TOTAL, then amount/due
+       words; last resort the largest plausible number (the total usually
+       dominates a slip). SUBTOTAL/TAX/VAT lines are skipped. */
+    const totalLine = /(grand\s*total|total\s*(?:amount|due|payable)|amount\s*(?:due|payable)|net\s*payable|balance\s*due|মোট)/i;
+    let amount = null;
+    const pickFrom = preds => {
+      for (const l of lines) {
+        if (!preds.some(p => p.test(l)) || /sub\s*total/i.test(l)) continue;
+        const nums = grab(l);
+        if (nums.length) { amount = nums[nums.length - 1]; return true; }
+      }
+      return false;
+    };
+    if (!pickFrom([totalLine])
+      && !pickFrom([/\btotal\b/i])
+      && !pickFrom([/\bamount\b/i, /\bdue\b/i, /\bpayable\b/i, /\bcash\b/i, /\btender\b/i, /\bpaid\b/i])) {
+      const sym  = lines.filter(l => /(?:৳|\btk\b|bdt|¥|￥|\$|\brs\b|€|£)/i.test(l)).flatMap(grab);
+      const all  = lines.flatMap(grab);
+      const pool = (sym.length ? sym : all).filter(v => v >= 1 && v <= 999999);
+      if (pool.length) amount = Math.max(...pool);
+    }
+    if (!Number.isFinite(amount) || amount <= 0 || amount > 1000000) return null;
+
+    /* 2 · category — trained name → static keywords → roll onto the
+       budgeted umbrella; the user's "Other" absorbs when it exists; a
+       LONE budgeted bucket takes it; otherwise null (ask the user —
+       never invent one) */
+    const hay = lines.join(' ');
+    let category = matchTrainedCategory(hay) || detectCategory(hay);
+    if (category) category = rollToBudgeted(category) || category;
+    if (!category) {
+      const other = Object.keys(CATEGORIES).find(k => k.toLowerCase() === 'other');
+      if (other) category = other;
+    }
+    if (!category) {
+      const budgeted = Object.keys(CATEGORIES).filter(k => (CATEGORIES[k].budget || 0) > 0);
+      if (budgeted.length === 1) category = budgeted[0];
+    }
+    /* receipts may ONLY land in categories THIS user actually has — a
+       static-keyword name the user never trained becomes null and the
+       app asks instead of inventing a parallel bucket */
+    if (category && !Object.keys(CATEGORIES).some(k => k.toLowerCase() === String(category).toLowerCase()))
+      category = null;
+
+    /* 3 · merchant — first meaningful printed line (store name sits on top) */
+    const NOISE = /^(tax\s*invoice|invoice|receipt|cash|sales|customer|merchant|www\.|http|phone|tel|mobile|address|date|time|order|bill|table|server|cashier|terminal|thank|vat|tin\b)/i;
+    let merchant = null;
+    for (const l of lines) {
+      const cand = l.replace(/[^A-Za-z0-9&'.\- ]/g, ' ').replace(/\s+/g, ' ').trim();
+      if (cand.length < 3 || NOISE.test(cand) || /^[0-9\s\-/.]+$/.test(cand)) continue;
+      merchant = titleCase(cand.split(/\s+/).slice(0, 3).join(' '));
+      break;
+    }
+
+    return {
+      amount: +amount.toFixed(2),
+      merchant: merchant || category || 'Receipt',
+      category: category || null,
+    };
+  }
+
+  /* ---------- browser-only OCR glue (not exercised by unit tests) ---------- */
+  let ocrLibPromise = null, ocrWorker = null;
+  function loadTesseract() {
+    if (typeof window !== 'undefined' && window.Tesseract) return Promise.resolve(window.Tesseract);
+    if (ocrLibPromise) return ocrLibPromise;
+    ocrLibPromise = new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+      s.onload  = () => window.Tesseract ? resolve(window.Tesseract) : reject(new Error('OCR library did not initialize'));
+      s.onerror = () => { ocrLibPromise = null; reject(new Error('OCR library download failed')); };
+      document.head.appendChild(s);
+    });
+    return ocrLibPromise;
+  }
+
+  async function runReceiptOCR(dataUrl) {
+    const T = await loadTesseract();
+    if (!ocrWorker) ocrWorker = await T.createWorker('eng');  /* eng traineddata downloads once, then cached */
+    const { data } = await ocrWorker.recognize(dataUrl);
+    return data && data.text ? data.text : '';
+  }
+
+  /* ---------- receipt reply cards ---------- */
+  function replyReceipt(exp) {
+    const limit = budgetOf(exp.category);
+    const spent = totalsByCategory()[exp.category] || 0;
+    const total = expenses.reduce((s, e) => s + e.amount, 0);
+    let out = `🧾 Receipt read — **${money(exp.amount)}** at **${exp.merchant}**, deducted from **${exp.category}**.\n`;
+    out += limit > 0
+      ? `• ${exp.category}: ${money(spent)} of ${money(limit)} — ${Math.round(spent / limit * 100)}% of limit, ${money(Math.max(0, limit - spent))} left\n`
+      : `• ${exp.category}: ${money(spent)} so far (no limit — try *"Set my ${exp.category} budget to 500"*)\n`;
+    out += `• Total spent: ${money(total)} · Remaining: **${money(Math.max(0, budgetTotal() - total))}**`;
+    return out;
+  }
+
+  function askReceiptCategory() {
+    const p = pendingReceipt;
+    const cats = Object.keys(CATEGORIES);
+    const hint = cats.length ? `Your categories: ${cats.join(', ')}.` : 'Train a budget first, e.g. *"Set my Food budget to 500"*.';
+    return `🧾 I read **${money(p ? p.amount : 0)}**${p && p.merchant ? ` at **${p.merchant}**` : ''} from the photo, but I couldn't match it to one of your categories.\nReply with just the category name — like *"Food"* — and I'll deduct it from that budget.\n${hint}`;
+  }
+
   /* ------------------------------ send pipeline ------------------------------ */
   async function handleSend(text, image) {
     if (busy || !currentUser || (!text.trim() && !image)) return;
@@ -1389,10 +1606,52 @@ Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining bud
       return;
     }
 
+    /* a receipt is waiting for its category ("I read ¥45 at Green Mart —
+       reply with the category") — a bare category reply completes it and
+       deducts from THAT budget */
+    if (pendingReceipt && !image && !parseExpense(text)) {
+      const hit = matchTrainedCategory(text) || detectCategory(text);
+      if (hit) {
+        const cat = rollToBudgeted(hit) || hit;
+        addUserMessage(text, null);
+        const entry = addExpense({ amount: pendingReceipt.amount, category: cat, merchant: pendingReceipt.merchant });
+        pendingReceipt = null;
+        addBotMessage(replyReceipt(entry));
+        busy = false;
+        setSendBusy(false);
+        chatInput.focus();
+        return;
+      }
+    }
+
     addUserMessage(text, image);
     clearAttach();
 
-    const exp = text ? parseExpense(text) : null;
+    /* receipt photo — read it LOCALLY in the browser (Tesseract OCR),
+       log against the user's own category and deduct from that budget
+       immediately; the engine is then TOLD what landed so its Sheets
+       write stays consistent (the sync merge dedupes it). */
+    let receiptExp = null;
+    if (image) {
+      showTyping();
+      try {
+        const raw = await Promise.race([
+          runReceiptOCR(image),
+          wait(60000).then(() => { throw new Error('OCR timed out'); }),
+        ]);
+        const hit = parseReceiptText(raw);
+        if (hit && hit.amount > 0) {
+          if (hit.category) {
+            receiptExp = addExpense({ amount: hit.amount, category: hit.category, merchant: hit.merchant });
+          } else {
+            pendingReceipt = { amount: hit.amount, merchant: hit.merchant };
+          }
+        }
+      } catch { /* OCR unavailable (offline / CDN blocked) → engine vision or manual entry */ }
+      hideTyping();
+    }
+
+    const exp = !receiptExp && text ? parseExpense(text) : null;
     if (exp) addExpense(exp);
 
     showTyping();
@@ -1403,9 +1662,11 @@ Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining bud
       try {
         reply = await callWebhook({
           action: 'chat',
-          chatInput: (text || 'Please log this receipt as an expense.')
-            + ((exp || image || /spent|paid|bought|cost|logged|expense/i.test(text || '')) ? categoryGuidance() : '')
-            + (image ? receiptGuidance() : ''),
+          chatInput: (receiptExp
+              ? `The user attached a receipt photo that the app already read and logged: ${money(receiptExp.amount)} at ${receiptExp.merchant}, category ${receiptExp.category}. Write exactly ONE expense row to the sheet for userId ${currentUser.email} — amount ${receiptExp.amount}, merchant ${receiptExp.merchant}, category ${receiptExp.category}, date today. Do not log a second row; just confirm briefly.`
+              : (text || 'Please log this receipt as an expense.'))
+            + ((exp || receiptExp || image || /spent|paid|bought|cost|logged|expense/i.test(text || '')) ? categoryGuidance() : '')
+            + (image && !receiptExp ? receiptGuidance() : ''),
           image: image || null,
           sessionId,
           userId: currentUser.email,
@@ -1424,10 +1685,15 @@ Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining bud
     await wait(550 + Math.random() * 450);
     hideTyping();
 
+    if (receiptExp)          addBotMessage(replyReceipt(receiptExp));
+    else if (pendingReceipt) addBotMessage(askReceiptCategory());
+
     if (reply && String(reply).trim())  addBotMessage(String(reply).trim());
-    else if (webhookOk)                 addBotMessage(UNSTRUCTURED_REPLY);
-    else if (image && !text.trim())     addBotMessage(imageOnlyReply());
-    else                                addBotMessage(localAgent(text || ''));
+    else if (webhookOk && !receiptExp && !pendingReceipt)  addBotMessage(UNSTRUCTURED_REPLY);
+    else if (!webhookOk && !receiptExp && !pendingReceipt) {
+      if (image && !text.trim()) addBotMessage(imageOnlyReply());
+      else                       addBotMessage(localAgent(text || ''));
+    }
 
     if (webhookOk) syncFromEngine().catch(() => {});
 
