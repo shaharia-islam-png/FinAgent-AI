@@ -12,7 +12,7 @@
 
   /* BUILD TAG — Ctrl+F this string on the LIVE /script.js after deploying
      to prove the new file is really being served (Netlify caches hard). */
-  const BUILD_TAG = 'finagent-v8.3-auth-fallback';
+  const BUILD_TAG = 'finagent-v8.3-register-sync';
   /* CACHE_VERSION — bump this to force EVERY device to discard its old
      local snapshot once. v8.2 = 8: pre-v8 caches may hold categories the
      old buggy sync adopted from a shared sheet (a stranger's budgets
@@ -24,6 +24,7 @@
   const USERS_KEY    = 'finagent_users_v1';
   const SESSION_KEY  = 'finagent_session_v1';
   const WEBHOOK_KEY  = 'finagent_webhook_v1';
+  const PENDING_KEY  = 'finagent_pending_register_v1';   /* v8.3 — accounts parked while the engine was down */
   /* Production n8n webhook — used when no custom URL is saved in localStorage.
      Deployed sites (Netlify, GitHub Pages…) start with an EMPTY localStorage,
      so without this default the engine falls back to local mode + Standby.
@@ -319,6 +320,49 @@
     if (r.ok === false && r.error)      return false;  // engine explicitly refused
     if (r.unreachable || r.httpError)   return false;  // network / HTTP failure → NOT saved
     return true;                                       // engine answered 200 with a payload → saved
+  }
+
+  /* =====================================================================
+     PENDING REGISTER SELF-HEAL (v8.3) — a registration must never be lost.
+     If the auth engine is down / 5xx at register time the account is still
+     created locally (the demo keeps working) AND parked in a pending
+     queue. Every time the engine answers healthy again (verifyEngine
+     success), the queue is flushed: each parked account is re-registered,
+     and once the engine confirms, it leaves the queue. Result — the row
+     lands in Google Sheets automatically as soon as the workflow works.
+  ===================================================================== */
+  function pendingRegisters() {
+    try { const raw = JSON.parse(localStorage.getItem(PENDING_KEY)); return Array.isArray(raw) ? raw : []; }
+    catch { return []; }
+  }
+  function enqueuePendingRegister(name, email, pw) {
+    const q = pendingRegisters().filter(r => r.email !== email);
+    q.push({ name, email, pass64: btoa(pw), tries: 0, at: Date.now() });
+    localStorage.setItem(PENDING_KEY, JSON.stringify(q));
+  }
+  let flushBusy = false;
+  async function flushPendingRegisters() {
+    if (flushBusy) return;
+    const queue = pendingRegisters();
+    if (!queue.length) return;
+    flushBusy = true;
+    try {
+      const done = new Set();
+      for (const item of queue) {
+        const res = await apiPost('register', { name: item.name, email: item.email, password: atob(item.pass64) });
+        const already = res && (res.exists === true || (res.user && res.user.exists === true));
+        if (already) {
+          done.add(item.email);                       /* engine says already registered — nothing to sync */
+        } else if (res && !res.unreachable && !res.httpError && res.ok !== false) {
+          done.add(item.email);                       /* 200 — the row is in Sheets now */
+          toast('success', `Cloud reconnected — ${item.name} synced to the database ✓`);
+        } else {
+          item.tries = (item.tries || 0) + 1;         /* engine still broken — keep parked */
+        }
+      }
+      const rest = queue.filter(r => !done.has(r.email) && (r.tries || 0) < 30);
+      localStorage.setItem(PENDING_KEY, JSON.stringify(rest));
+    } finally { flushBusy = false; }
   }
 
   function setAuthBusy(btn, isBusy) {
@@ -880,7 +924,16 @@ Check: the **setBudget** branch in n8n (Switch rule → Budget Append → Respon
     const verdict = authVerdict(res, true);
     if (verdict === 'local' || verdict === 'broken') {
       if (verdict === 'broken') {
-        toast('error', `Auth engine failed (${res.unreachable ? res.error : 'HTTP ' + res.httpError}) — account created on this device instead.`);
+        /* v8.3 — the row did NOT reach Google Sheets. Park the account for
+           automatic re-registration the moment the engine answers again,
+           and say so where the user cannot miss it (chat, not a 4s toast). */
+        enqueuePendingRegister(name, email, pw);
+        const why = res.unreachable ? res.error : 'HTTP ' + res.httpError;
+        toast('error', `Cloud engine failed (${why}) — account kept on this device and will auto-sync once the engine is fixed.`);
+        setTimeout(() => addBotMessage(
+`⚠️ **Your account was created on this device only** — the cloud engine refused the registration (${why}), so the database row is **pending**.
+
+FinAgent will re-send it automatically the next time the engine answers. Ask the admin to check **n8n → Executions → the red register node**.`), 1600);
       }
       return localRegister(name, email, pw);
     }
@@ -1833,6 +1886,7 @@ Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining bud
         signal: ctrl.signal,
       });
       setEngineState(res.ok ? 'active' : 'offline');
+      if (res.ok) flushPendingRegisters().catch(() => {});   /* v8.3 — engine is back → sync parked registrations */
     } catch {
       setEngineState('offline');
     } finally {
@@ -2012,10 +2066,10 @@ Ask me anything, or tap a quick chip below.`);
     bindEvents();
 
     /* deploy verification — the browser TAB title shows the build instantly
-       (no DevTools, no Ctrl+F needed). If the tab does not say v8, the site
-       is still serving the OLD script.js — re-deploy and hard-refresh. */
-    document.title = 'FinAgent AI · v8';
-    console.log(`%c${BUILD_TAG} — per-user isolation + receipt OCR LIVE`,
+       (no DevTools, no Ctrl+F needed). If the tab does not say v8.3, the
+       site is still serving the OLD script.js — re-deploy + hard-refresh. */
+    document.title = 'FinAgent AI · v8.3';
+    console.log(`%c${BUILD_TAG} — register auto-sync + per-user isolation + receipt OCR LIVE`,
       'background:#10B981;color:#0B0F19;font-weight:bold;padding:2px 8px;border-radius:4px');
 
     try {
