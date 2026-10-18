@@ -12,7 +12,7 @@
 
   /* BUILD TAG — Ctrl+F this string on the LIVE /script.js after deploying
      to prove the new file is really being served (Netlify caches hard). */
-  const BUILD_TAG = 'finagent-v8.3-register-sync';
+  const BUILD_TAG = 'finagent-v8.3.1-local-login';
   /* CACHE_VERSION — bump this to force EVERY device to discard its old
      local snapshot once. v8.2 = 8: pre-v8 caches may hold categories the
      old buggy sync adopted from a shared sheet (a stranger's budgets
@@ -844,7 +844,7 @@ Check: the **setBudget** branch in n8n (Switch rule → Budget Append → Respon
 
   function localRegister(name, email, pw) {
     const users = getUsers();
-    if (users.some(u => u.email === email)) return showFormError(regError, 'An account with this email already exists.');
+    if (users.some(u => u.email === email)) return showFormError(regError, 'An account with this email already exists on this device — switch to the Login tab and sign in.');
     users.push({ name, email, pass: btoa(pw), createdAt: Date.now() });
     saveUsers(users);
     toast('success', `Account created — welcome, ${name.split(' ')[0]}!`);
@@ -897,6 +897,21 @@ Check: the **setBudget** branch in n8n (Switch rule → Budget Append → Respon
         toast('error', `Auth engine failed (${res.unreachable ? res.error : 'HTTP ' + res.httpError}) — using local mode.`);
       }
       return localLogin(email, pw);
+    }
+    /* v8.3.1 — the engine may say "no account / invalid" while the account
+       exists ON THIS DEVICE (it was created while the engine was down, its
+       Sheets row is still pending sync). Device credentials win; the engine
+       catches up automatically via the pending-sync queue. */
+    if (verdict === 'refused' || verdict === 'no-account' || verdict === 'bad-password') {
+      const local = attemptLogin(email, pw);
+      if (local.ok) {
+        toast('success', `Welcome back, ${local.user.name.split(' ')[0]}!`);
+        if (pendingRegisters().some(r => r.email === local.user.email)) {
+          setTimeout(() => addBotMessage(
+`⚠️ **Signed in from this device** — your cloud registration is still **pending** (the engine refused it earlier). The moment the n8n register branch is fixed, this account syncs to the database automatically.`), 1600);
+        }
+        return enterApp(local.user);
+      }
     }
     if (verdict === 'refused') return showFormError(loginError, res.error || 'Auth engine refused the login.');
     if (verdict === 'no-account') return showFormError(loginError, 'No account found for that email. Register first.');
@@ -2066,9 +2081,9 @@ Ask me anything, or tap a quick chip below.`);
     bindEvents();
 
     /* deploy verification — the browser TAB title shows the build instantly
-       (no DevTools, no Ctrl+F needed). If the tab does not say v8.3, the
+       (no DevTools, no Ctrl+F needed). If the tab does not say v8.3.1, the
        site is still serving the OLD script.js — re-deploy + hard-refresh. */
-    document.title = 'FinAgent AI · v8.3';
+    document.title = 'FinAgent AI · v8.3.1';
     console.log(`%c${BUILD_TAG} — register auto-sync + per-user isolation + receipt OCR LIVE`,
       'background:#10B981;color:#0B0F19;font-weight:bold;padding:2px 8px;border-radius:4px');
 
