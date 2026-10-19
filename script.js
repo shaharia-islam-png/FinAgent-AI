@@ -12,7 +12,7 @@
 
   /* BUILD TAG — Ctrl+F this string on the LIVE /script.js after deploying
      to prove the new file is really being served (Netlify caches hard). */
-  const BUILD_TAG = 'finagent-v8.3.1-local-login';
+  const BUILD_TAG = 'finagent-v8.3.3-receipt-uisync';
   /* CACHE_VERSION — bump this to force EVERY device to discard its old
      local snapshot once. v8.2 = 8: pre-v8 caches may hold categories the
      old buggy sync adopted from a shared sheet (a stranger's budgets
@@ -580,14 +580,29 @@
     if (res.ok && Array.isArray(res.expenses)) {
       const mine = r => { const u = emailTag(r); return !u || u === currentUser.email.toLowerCase(); };
       const localLedger = expenses;                    /* ownership prints */
-      const list = res.expenses.filter(mine).map(normalizeServerExpense).filter(Boolean);
+      /* v8.3.3 — keep the row beside its ownership tag: rows the engine
+         logged FOR THIS USER (receipt photos read by the n8n agent) have
+         no local twin, so print-matching alone would drop them forever. */
+      const pairs = res.expenses.filter(mine)
+        .map(r => ({ tag: emailTag(r), e: normalizeServerExpense(r) }))
+        .filter(p => p.e);
+      const list = pairs.map(p => p.e);
       /* ledger canonicalization — budgeted umbrellas claim near-duplicate
          sheet categories ("Dining" rows count toward the user's Food limit) */
-      for (const e of list) {
-        const c = rollToBudgeted(e.category);
-        if (c && c !== e.category) e.category = c;
+      for (const p of pairs) {
+        const c = rollToBudgeted(p.e.category);
+        if (c && c !== p.e.category) p.e.category = c;
       }
-      const adopted = list.filter(e => localLedger.some(le => sameSpend(le, e)));
+      /* adoption rule — (a) rows TAGGED with this email are authoritative
+         even when brand-new: the n8n agent writes the receipt row with
+         our own userId, and only someone who already knows the email
+         could ever produce one (a stranger's row carries THEIR tag or
+         none). (b) untagged rows still need a local spend print — the
+         v8 shared-sheet leak stays closed. */
+      const adopted = pairs
+        .filter(p => p.tag === currentUser.email.toLowerCase() ||
+                     localLedger.some(le => sameSpend(le, p.e)))
+        .map(p => p.e);
       expenses = mergeLedgers(localLedger, adopted);
       /* buckets for spending we ACTUALLY own — foreign sheet rows can no
          longer seed categories into this account's panel or cache */
@@ -1468,8 +1483,8 @@ Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining bud
      picture and log from the user's own categories, never invent one.
      With the sheet write using this category, the app's roll-up deducts
      from the right budget automatically on the next sync. */
-  function receiptGuidance() {
-    return `\n\n[FinAgent receipt note — the user attached a receipt/payment screenshot. Read the image: extract the TOTAL amount actually paid, the merchant/store name, and the date. Log it as ONE expense for this user. Amount in CNY, write ¥xx. Category MUST be exactly one of the user's own categories (see the FinAgent system note) — pick the closest match. If the total is unreadable or ambiguous, ask the user instead of guessing.]`;
+  function receiptGuidance(email) {
+    return `\n\n[FinAgent receipt note — the user attached a receipt/payment screenshot. Read the image: extract the TOTAL amount actually paid, the merchant/store name, and the date. Log it as ONE expense for this user. SHEET ROW CONTRACT — the row's userId column MUST be exactly "${email}" (never a name, never blank); amount column = plain number only, no currency symbol or comma (write 3917.00, never ¥3917.00); date = YYYY-MM-DD; merchant = store name. Amount in CNY. Category MUST be exactly one of the user's own categories (see the FinAgent system note) — pick the closest match. If the total is unreadable or ambiguous, ask the user instead of guessing.]`;
   }
 
   /* =====================================================================
@@ -1700,6 +1715,32 @@ Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining bud
     return data && data.text ? data.text : '';
   }
 
+  /* v8.3.2 — shrink a receipt photo before OCR + before it rides to n8n.
+     Phone photos are 3000-4000px: Tesseract crawls on them (often past the
+     60s timeout → the silent catch killed the whole receipt path), and the
+     base64 payload can top n8n's body limit. 1400px @0.75 keeps every
+     printed total perfectly legible while cutting both by ~10x. */
+  function shrinkImage(dataUrl, maxDim = 1400, quality = 0.75) {
+    return new Promise(resolve => {
+      try {
+        const img = new Image();
+        img.onload = () => {
+          try {
+            const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+            if (scale >= 1) return resolve(dataUrl);            /* already small enough */
+            const c = document.createElement('canvas');
+            c.width = Math.round(img.width * scale);
+            c.height = Math.round(img.height * scale);
+            c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+            resolve(c.toDataURL('image/jpeg', quality));
+          } catch { resolve(dataUrl); }
+        };
+        img.onerror = () => resolve(dataUrl);
+        img.src = dataUrl;
+      } catch { resolve(dataUrl); }
+    });
+  }
+
   /* ---------- receipt reply cards ---------- */
   function replyReceipt(exp) {
     const limit = budgetOf(exp.category);
@@ -1718,6 +1759,14 @@ Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining bud
     const cats = Object.keys(CATEGORIES);
     const hint = cats.length ? `Your categories: ${cats.join(', ')}.` : 'Train a budget first, e.g. *"Set my Food budget to 500"*.';
     return `🧾 I read **${money(p ? p.amount : 0)}**${p && p.merchant ? ` at **${p.merchant}**` : ''} from the photo, but I couldn't match it to one of your categories.\nReply with just the category name — like *"Food"* — and I'll deduct it from that budget.\n${hint}`;
+  }
+
+  /* v8.3.2 — dead-end rescue card. Shown when a photo came in, the browser
+     OCR could not log it, and the cloud agent answered with an image
+     complaint (it is text-only until the n8n vision branch is built).
+     Gives the user a path that ALWAYS works: type the amount + store. */
+  function receiptFallbackCard() {
+    return `📷 I couldn't read the photo clearly (OCR unavailable or the print is too small).\nNo problem — just type the amount and store in one line, e.g. *"Spent ${CUR}120 at KFC"*, and I'll log it instantly against the right budget.`;
   }
 
   /* ------------------------------ send pipeline ------------------------------ */
@@ -1767,6 +1816,7 @@ Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining bud
     if (image) {
       showTyping();
       try {
+        image = await shrinkImage(image);   /* v8.3.2 — faster OCR + ~10x smaller engine payload */
         const raw = await Promise.race([
           runReceiptOCR(image),
           wait(60000).then(() => { throw new Error('OCR timed out'); }),
@@ -1798,7 +1848,7 @@ Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining bud
               ? `The user attached a receipt photo that the app already read and logged: ${money(receiptExp.amount)} at ${receiptExp.merchant}, category ${receiptExp.category}. Write exactly ONE expense row to the sheet for userId ${currentUser.email} — amount ${receiptExp.amount}, merchant ${receiptExp.merchant}, category ${receiptExp.category}, date today. Do not log a second row; just confirm briefly.`
               : (text || 'Please log this receipt as an expense.'))
             + ((exp || receiptExp || image || /spent|paid|bought|cost|logged|expense/i.test(text || '')) ? categoryGuidance() : '')
-            + (image && !receiptExp ? receiptGuidance() : ''),
+            + (image && !receiptExp ? receiptGuidance(currentUser.email) : ''),
           image: image || null,
           sessionId,
           userId: currentUser.email,
@@ -1820,8 +1870,16 @@ Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining bud
     if (receiptExp)          addBotMessage(replyReceipt(receiptExp));
     else if (pendingReceipt) addBotMessage(askReceiptCategory());
 
-    if (reply && String(reply).trim())  addBotMessage(String(reply).trim());
-    else if (webhookOk && !receiptExp && !pendingReceipt)  addBotMessage(UNSTRUCTURED_REPLY);
+    const replyTxt = reply && String(reply).trim();
+    if (replyTxt && image && !receiptExp && !pendingReceipt &&
+        /didn'?t receive|did not receive|not receive any|no image|can'?t see|cannot see|couldn'?t see|can'?t read the image|please upload|attach the (receipt|image|photo)/i.test(replyTxt)) {
+      /* v8.3.2 — the cloud agent is text-only (no vision branch yet): it
+         never saw the photo, and its "I didn't receive the image" reply is
+         a dead end. Replace it with a card whose next step always works. */
+      addBotMessage(receiptFallbackCard());
+    } else if (replyTxt) {
+      addBotMessage(replyTxt);
+    } else if (webhookOk && !receiptExp && !pendingReceipt)  addBotMessage(UNSTRUCTURED_REPLY);
     else if (!webhookOk && !receiptExp && !pendingReceipt) {
       if (image && !text.trim()) addBotMessage(imageOnlyReply());
       else                       addBotMessage(localAgent(text || ''));
@@ -2081,9 +2139,9 @@ Ask me anything, or tap a quick chip below.`);
     bindEvents();
 
     /* deploy verification — the browser TAB title shows the build instantly
-       (no DevTools, no Ctrl+F needed). If the tab does not say v8.3.1, the
+       (no DevTools, no Ctrl+F needed). If the tab does not say v8.3.3, the
        site is still serving the OLD script.js — re-deploy + hard-refresh. */
-    document.title = 'FinAgent AI · v8.3.1';
+    document.title = 'FinAgent AI · v8.3.3';
     console.log(`%c${BUILD_TAG} — register auto-sync + per-user isolation + receipt OCR LIVE`,
       'background:#10B981;color:#0B0F19;font-weight:bold;padding:2px 8px;border-radius:4px');
 
