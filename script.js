@@ -1198,3 +1198,1207 @@ Then train me with your own categories anytime:
         cat = r;
       } else if ((CATEGORIES[cat]?.budget || 0) <= 0) {
         /* 0-limit bucket claimed by a budgeted umbrella → count there */
+        const r = rollToBudgeted(cat);
+        if (r && r !== cat && t[r] !== undefined) cat = r;
+      }
+      t[cat] += e.amount;
+    });
+    return t;
+  }
+
+  function renderChart() {
+    if (!chart) return;
+    chart.data.labels = Object.keys(CATEGORIES);
+    chart.data.datasets[0].backgroundColor = Object.values(CATEGORIES).map(c => c.color);
+    chart.data.datasets[0].data = Object.values(totalsByCategory()).map(v => +v.toFixed(2));
+    chart.update();
+  }
+
+  function renderLegend() {
+    const totals = totalsByCategory();
+    const total = Object.values(totals).reduce((a, b) => a + b, 0);
+    if (!Object.keys(CATEGORIES).length) {
+      chartLegend.innerHTML = `<div class="empty-state" style="padding:14px 6px">
+        <i class="fa-solid fa-wand-magic-sparkles"></i>No categories yet — train me in chat:
+        *"Set my Education budget to 600"*</div>`;
+      return;
+    }
+    chartLegend.innerHTML = Object.entries(CATEGORIES).map(([name, cfg]) => {
+      const v = totals[name] || 0;
+      const p = total ? Math.round(v / total * 100) : 0;
+      return `<div class="legend-row${v === 0 ? ' legend-row--zero' : ''}">
+        <span class="legend-dot" style="background:${cfg.color}; box-shadow:0 0 8px ${cfg.color}66"></span>
+        <span class="legend-name">${name}</span>
+        <span class="legend-val">${money(v)}</span>
+        <span class="legend-pct">${total ? p + '%' : '—'}</span>
+      </div>`;
+    }).join('');
+  }
+
+  function buildBudgetRows() {
+    if (!Object.keys(CATEGORIES).length) {
+      budgetList.innerHTML = `<div class="empty-state" style="padding:14px 6px">
+        <i class="fa-solid fa-sliders"></i>No budgets yet — tell me in chat:
+        *"Set my Groceries budget to 500"*</div>`;
+      return;
+    }
+    budgetList.innerHTML = Object.entries(CATEGORIES).map(([name, cfg]) => `
+      <div>
+        <div class="mb-1.5 flex items-center justify-between">
+          <div class="flex items-center gap-2.5">
+            <span class="cat-ico" style="color:${cfg.color}; background:${cfg.color}1a; border:1px solid ${cfg.color}38">
+              <i class="fa-solid ${cfg.icon}"></i>
+            </span>
+            <span class="text-[13px] font-medium text-slate-100">${name}</span>
+          </div>
+          <span id="btxt-${name}" class="font-mono text-[11px] text-slate-400"></span>
+        </div>
+        <div class="bar-track"><div class="bar-fill" id="bfill-${name}"></div></div>
+        <div class="mt-1 flex justify-between font-mono text-[10px] text-slate-500">
+          <span id="bpct-${name}">—</span>
+          <span>limit ${cfg.budget > 0 ? CUR + cfg.budget : 'not set'}</span>
+        </div>
+      </div>`).join('');
+  }
+
+  function renderBudgets() {
+    const totals = totalsByCategory();
+    for (const [name, cfg] of Object.entries(CATEGORIES)) {
+      const spent = totals[name] || 0;
+      const limit = cfg.budget;
+      const pctRaw = limit > 0 ? spent / limit * 100 : 0;
+      const fill = $('bfill-' + name), txt = $('btxt-' + name), pctEl = $('bpct-' + name);
+      if (!fill || !txt || !pctEl) continue;
+      fill.style.width = Math.min(100, pctRaw).toFixed(1) + '%';
+      fill.classList.toggle('over', limit > 0 && pctRaw >= 100);
+      fill.classList.toggle('warn', limit > 0 && pctRaw >= 80 && pctRaw < 100);
+      txt.textContent = `${CUR}${spent.toFixed(2)} / ${limit > 0 ? CUR + limit : 'not set'}`;
+      pctEl.textContent = limit > 0 ? `${Math.round(pctRaw)}%${pctRaw >= 100 ? ' · over' : ''}` : '—';
+      pctEl.classList.toggle('pct-over', limit > 0 && pctRaw >= 100);
+
+      const lvl = limit > 0 ? (pctRaw >= 100 ? 2 : pctRaw >= 80 ? 1 : 0) : 0;
+      if (currentUser && lvl > (lastLevel[name] || 0)) {
+        if (lvl === 2) toast('error', `${name} budget exceeded — ${CUR}${spent.toFixed(2)} of ${CUR}${limit}.`);
+        else toast('info', `${name} is at ${Math.round(pctRaw)}% of its limit.`);
+      }
+      lastLevel[name] = lvl;
+    }
+  }
+
+  function renderTransactions() {
+    txCount.textContent = expenses.length;
+    const rows = [...expenses].sort((a, b) => b.ts - a.ts).slice(0, 30);
+    if (!rows.length) {
+      txBody.innerHTML = `<tr><td colspan="4" class="empty-state">
+        <i class="fa-solid fa-receipt"></i>No expenses yet — tell the agent what you spent.</td></tr>`;
+      return;
+    }
+    txBody.innerHTML = rows.map(e => {
+      const cfg = CATEGORIES[e.category] || { color: '#6ee7b7' };
+      const st = e.status === 'synced'
+        ? '<span class="status-pill status-pill--synced"><span class="dot"></span>Synced</span>'
+        : '<span class="status-pill status-pill--logged"><span class="dot"></span>Logged</span>';
+      return `<tr class="tx-row">
+        <td><div class="tx-merchant">${escapeHtml(e.merchant)}</div><div class="tx-time">${fmtWhen(e.ts)}</div></td>
+        <td><span class="cat-badge" style="color:${cfg.color}; background:${cfg.color}14; border-color:${cfg.color}38">
+          <span class="cat-badge-dot" style="background:${cfg.color}"></span>${e.category}</span></td>
+        <td>${st}</td>
+        <td class="tx-amt">&minus;${money(e.amount)}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  function renderStats() {
+    const total = expenses.reduce((s, e) => s + e.amount, 0);
+    const remaining = budgetTotal() - total;
+    animateNumber(statSpent, total, { prefix: CUR });
+    animateNumber(statRemaining, remaining, { prefix: CUR });
+    statRemaining.classList.toggle('text-rose-300', remaining < 0);
+    statRemaining.classList.toggle('text-emerald-300', remaining >= 0);
+    animateNumber(statCount, expenses.length, { decimals: 0 });
+  }
+
+  function refreshDashboard() {
+    renderChart(); renderLegend(); renderBudgets(); renderTransactions(); renderStats();
+    saveData();
+  }
+
+  /* ---------------------------------------------------------------------
+     PRUNE — remove 0-limit categories nothing spends on anymore. The
+     budget roll-up empties engine-invented near-duplicates ("Dining"
+     once Food carries the limit); this erases their leftover rows so the
+     chart, legend and budget panel show ONLY the user's own buckets.
+     Trained limits (budget > 0) and buckets with live expenses stay.
+  --------------------------------------------------------------------- */
+  function pruneEmptyCategories() {
+    const live = new Set(expenses.map(e => e.category));
+    let removed = 0;
+    for (const name of Object.keys(CATEGORIES)) {
+      if ((CATEGORIES[name].budget || 0) > 0) continue;  /* user-trained limit → keep */
+      if (live.has(name)) continue;                      /* still spending → keep */
+      delete CATEGORIES[name];
+      removed++;
+    }
+    if (removed) { saveCategoriesLocal(); buildBudgetRows(); }
+    return removed;
+  }
+
+  function addExpense(exp) {
+    addCategory(exp.category, 0);   // "Spent ¥300 on Education" → Education joins the chart
+    const entry = { ...exp, ts: Date.now(), status: 'logged' };
+    expenses.push(entry);
+    refreshDashboard();
+    return entry;
+  }
+
+  /* =====================================================================
+     EXPENSE PARSER — "Spent ¥300 on Education at MIT" → new category
+  ===================================================================== */
+  function detectCategory(text) {
+    if (!text) return null;
+    const t = ' ' + text.toLowerCase() + ' ';
+    for (const [cat, words] of Object.entries(CATEGORY_KEYWORDS))
+      for (const w of words) if (t.includes(w)) return cat;
+    return null;
+  }
+
+  function detectAmount(text) {
+    let m = text.match(/[¥￥$]\s*(\d+(?:\.\d{1,2})?)/);
+    if (!m) m = text.match(/(?:spent|paid|bought|logged|added|dropped)\s*[¥￥$]?\s*(\d+(?:\.\d{1,2})?)/i);
+    if (!m) m = text.match(/\b(\d{1,6}(?:\.\d{1,2})?)\b/);
+    if (!m) return null;
+    const v = parseFloat(m[1]);
+    return v > 0 && v <= 1000000 ? v : null;
+  }
+
+  function detectMerchant(text) {
+    const matches = [...text.matchAll(/\b(?:at|from)\s+([A-Za-z][A-Za-z0-9&'.\- ]{0,40})/gi)];
+    if (!matches.length) return null;
+    let raw = matches[matches.length - 1][1];
+    raw = raw.replace(/\s+(?:on|yesterday|today|last|this|just|then)\b[\s\S]*$/i, '')
+             .replace(/[.,!?;:]+$/, '').trim();
+    if (!raw) return null;
+    return titleCase(raw.split(/\s+/).slice(0, 3).join(' '));
+  }
+
+  function parseExpense(text) {
+    const amount = detectAmount(text);
+    if (amount === null) return null;
+    const merchant = detectMerchant(text);
+
+    let category = matchTrainedCategory(text) || matchTrainedCategory(merchant || '')
+                || detectCategory(text)    || detectCategory(merchant || '');
+    if (!category) {
+      const m = text.match(/\bon\s+([A-Za-z][A-Za-z ]{2,24}?)(?=\s+(?:at|from)\b|[.,!?]|$)/i);
+      if (m) {
+        const guess = titleCase(m[1].trim());
+        if (guess && !/^(the|a|an|my|some|it)$/i.test(guess)) category = guess;
+      }
+    }
+    category = category || 'Misc';
+    const rolled = rollToBudgeted(category);   /* budgeted umbrellas own the name */
+    if (rolled) category = rolled;
+    return { amount: +amount.toFixed(2), category, merchant: merchant || category };
+  }
+
+  /* =====================================================================
+     LOCAL FALLBACK AGENT
+  ===================================================================== */
+  const HELP = `Here's what I can do:
+• **Set up** — *"My monthly income is 8000"*
+• **Log expenses** — *"Spent ${CUR}35 on Groceries at Walmart"*
+• **Custom categories** — *"Set my Education budget to 600"*
+• **Multi-setup** — *"My income is 5000, food budget 1500, transport 1000"*
+• **Budget checks** — *"What is my remaining budget?"*
+• **Summary** — *"Show my spending summary"*`;
+
+  const UNSTRUCTURED_REPLY = `The agent engine acknowledged your message but returned no readable reply.
+Expected one of \`output\`, \`reply\`, \`text\` or \`message\` in the JSON response.`;
+
+  function replyExpense(exp) {
+    const limit = budgetOf(exp.category);
+    const spent = totalsByCategory()[exp.category] || 0;
+    const total = expenses.reduce((s, e) => s + e.amount, 0);
+    let out = `Logged **${money(exp.amount)}** at **${exp.merchant}** under **${exp.category}**.\n`;
+    out += limit > 0
+      ? `• ${exp.category}: ${money(spent)} of ${money(limit)} — ${Math.round(spent / limit * 100)}% of limit\n`
+      : `• ${exp.category}: ${money(spent)} so far (no limit — try *"Set my ${exp.category} budget to 500"*)\n`;
+    out += `• Total spent: ${money(total)} · Remaining: **${money(Math.max(0, budgetTotal() - total))}**`;
+    return out;
+  }
+
+  function replyRemaining() {
+    const cats = Object.keys(CATEGORIES);
+    const total = expenses.reduce((s, e) => s + e.amount, 0);
+    if (!cats.length && profile.income <= 0) {
+      return `You haven't trained me yet! Start with:
+• *"My monthly income is 8000"*
+• *"Set my Education budget to 600"*`;
+    }
+    const lines = cats.map(name => {
+      const limit = budgetOf(name);
+      const spentC = totalsByCategory()[name] || 0;
+      return limit > 0
+        ? `• ${name}: **${money(Math.max(0, limit - spentC))}** left of ${CUR}${limit}`
+        : `• ${name}: ${money(spentC)} spent (no limit)`;
+    });
+    const overall = profile.income > 0
+      ? `Income-based Remaining: **${money(profile.income - total)}** of ${money(profile.income)}`
+      : 'Set your income first: *"My monthly income is 8000"*';
+    return `Here's where your budgets stand:\n${lines.join('\n')}\n${overall}.`;
+  }
+
+  function replyCategory(name) {
+    name = rollToBudgeted(name) || name;       /* "dining" question → Food bucket */
+    const limit = budgetOf(name);
+    const spent = totalsByCategory()[name] || 0;
+    const left = limit - spent;
+    const recent = expenses.filter(e => e.category === name).sort((a, b) => b.ts - a.ts).slice(0, 3);
+    let out = limit > 0
+      ? `**${name}** this month: **${money(spent)}** of ${money(limit)} (${Math.round(spent / limit * 100)}%).\n`
+      : `**${name}** this month: **${money(spent)}** (no limit set).\n`;
+    out += limit > 0
+      ? (left >= 0 ? `• Remaining: **${money(left)}**` : `• Over limit by **${money(-left)}**`)
+      : `• Set one: *"Set my ${name} budget to 500"*`;
+    if (recent.length) out += `\nRecent: ${recent.map(e => `${e.merchant} (${money(e.amount)})`).join(', ')}`;
+    return out;
+  }
+
+  function replySummary() {
+    const t = totalsByCategory();
+    const total = Object.values(t).reduce((a, b) => a + b, 0);
+    if (!total) return `No expenses logged yet. Train me first: *"My monthly income is 8000"*`;
+    const rows = Object.entries(t).sort((a, b) => b[1] - a[1])
+      .map(([n, v]) => `• ${n}: **${money(v)}** (${total ? Math.round(v / total * 100) : 0}%)`);
+    return `Spending summary — **${money(total)}** total this month:\n${rows.join('\n')}`;
+  }
+
+  function imageOnlyReply() {
+    return `Receipt received. I could not reach the engine to read it right now.
+• Check the engine badge (top-right) — n8n must be **Active** and its workflow needs a Gemini vision branch for images.
+• Meanwhile you can log it manually — e.g. *"Spent ${CUR}23.50 at Whole Foods"*`;
+  }
+
+  function localAgent(text) {
+    const t = text.toLowerCase();
+    const exp = parseExpense(text);
+    if (exp) return replyExpense(exp);
+
+    if (/remaining|left.*budget|budget.*left|how much.*(left|remaining)/.test(t)) return replyRemaining();
+    const catWord = t.match(/\b(grocer\w*|dining|utilit\w*|transport|shopping|education|health|travel|food)\b/);
+    if (catWord && /spent|spend|budget|left|how much|status/.test(t)) {
+      const w = catWord[1];
+      const name = w.startsWith('grocer') ? 'Groceries' : w.startsWith('utilit') ? 'Utilities'
+                 : w[0].toUpperCase() + w.slice(1);
+      return replyCategory(name);
+    }
+    if (/summary|overview|breakdown|how much.*spend|spent so far/.test(t)) return replySummary();
+    if (/help|what can you|how do i/.test(t)) return HELP;
+
+    return `I couldn't find an amount in that message.
+Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining budget?"* — say *"help"* for the full menu.`;
+  }
+
+  /* The n8n Gemini agent picks its own Category when appending to Google
+     Sheets — teach it the user's trained categories inline (zero n8n edits
+     needed) so "education purposes" lands in Education, never in
+     Miscellaneous, and replies use ¥ instead of $. Budgeted umbrellas get
+     explicit absorb hints so the agent writes "Food", never "Dining". */
+  const ROLL_HINTS = {
+    Food:          "Dining, restaurants, KFC/McDonald's/Starbucks, takeout, delivery, groceries, snacks",
+    Groceries:     'supermarket runs, vegetables, rice, fruits, Walmart/Costco, dining and takeout',
+    Dining:        'restaurants, KFC, cafes, food, takeout, delivery',
+    Transport:     'bus, metro, subway, taxi, Uber/DiDi, rickshaw, CNG, fuel, parking, train tickets',
+    Shopping:      'clothes, shoes, electronics, mall and online orders',
+    Other:         'other purposes, miscellaneous or unspecified spending, generic merchant Various — anything that fits no specific category',
+    Education:     'tuition, books, courses, coaching, school/admission fees, stationery, photocopy, xerox, printouts, notes, exam fees',
+    Health:        'medicine, doctor visits, hospital, pharmacy, clinic',
+    Utilities:     'electricity, water, gas, internet, wifi, phone bills, recharge',
+    Rent:          'flat rent, accommodation',
+    Travel:        'flights, hotels, trips, vacation',
+    Entertainment: 'movies, games, streaming, concerts',
+  };
+
+  function categoryGuidance() {
+    const cats = Object.keys(CATEGORIES);
+    if (!cats.length) return '';
+    const absorb = cats
+      .filter(n => (CATEGORIES[n].budget || 0) > 0 && ROLL_HINTS[n])
+      .map(n => `${n} absorbs: ${ROLL_HINTS[n]}`)
+      .join(' | ');
+    return `\n\n[FinAgent system note — follow strictly when logging to the sheet: Category MUST be exactly one of the user's own categories: ${cats.join(', ')}. TEXT CATEGORY WINS: if the user's own message text names a category (for example "spent on shopping budget" names Shopping, "paid for food" names Food, "transport cost" names Transport), you MUST log it under that exact named category — the user's words override any receipt hint and are NEVER treated as unspecified. Pick the closest match only when the text names no category; NEVER invent a near-duplicate or parallel category (no "Dining" when Food exists, no "Grocery" when Food/Groceries exists), and never use "Miscellaneous" unless nothing fits. If the user's text says "other purposes" or "miscellaneous", that IS naming their Other category — use "Other" when one exists, never "Shopping". The "Other" fallback is ONLY for spending where neither the text nor the receipt names a category — if the text names a real category, "Other" is wrong.${absorb ? ' Roll-ups: ' + absorb + '.' : ''} Currency is CNY: write amounts as ¥xx, never $.]`;
+  }
+
+  /* appended to image (receipt) messages — the engine must READ the
+     picture and log from the user's own categories, never invent one.
+     v8.3.7 VISION-FIRST: the model is ordered to read the photo like a
+     bookkeeper (Chinese + English total keywords), to take the category
+     from what the receipt sells, and to NEVER answer with a sentinel
+     ("ERR"/"Unknown"/"Miscellaneous") or ask the user to retype the
+     amount — that apology dead-end is gone. With the sheet write using
+     this category, the app's roll-up deducts from the right budget
+     automatically on the next sync. */
+  function receiptGuidance(email) {
+    return `\n\n[FinAgent receipt note — the user attached a receipt/payment screenshot. You ARE a vision model: READ THE PHOTO ITSELF, line by line, like a human bookkeeper — the picture is the source of truth for the total, merchant and date. TOTAL: find the printed grand total — 合计, 总计, 实付, 实收, 应付金额, Total, Grand Total, Amount Due, Total Payable, Balance Due — the big bold final figure; NEVER a subtotal, unit price or line item. MERCHANT: the store/shop name printed at the top. Values like "ERR", "Error", "Unknown", "N/A", "???" or blank are FORBIDDEN as merchant — write the best name you can actually see on the photo. CATEGORY: read it FROM THE IMAGE — what the receipt sells decides: food/restaurant/grocery items → the user's Food or Dining; clothes/shoes/electronics/mall goods → Shopping; tuition/school/books/stationery → Education; taxi/metro/fuel/parking → Transport; medicine/pharmacy/hospital → Health; electricity/water/gas/internet bills → Utilities; hotel/flights/trips → Travel; movies/games → Entertainment. Use ONLY the user's own category names (see the FinAgent system note). "Other"/"Miscellaneous" is ONLY for a photo where genuinely nothing recognizable appears — a receipt whose items you can read must NEVER land there. TEXT BEATS IMAGE: if the user's own message text names a category, that exact named category overrides the image hints (see TEXT CATEGORY WINS). SHEET ROW CONTRACT — the row's userId column MUST be exactly "${email}" (never a name, never blank); amount column = plain number only, no currency symbol or comma (write 258.00, never ¥258.00); date = YYYY-MM-DD; merchant = store name. Amount in CNY. NEVER ask the user to type the amount manually when a photo is attached — reading it is YOUR job: write the row with your best reading of the printed total and, only if a part was truly unclear, say exactly which part. Log it as ONE expense for this user.]`;
+  }
+
+  /* =====================================================================
+     N8N CHAT BRIDGE — 45s timeout for agent + tools + retries
+  ===================================================================== */
+  function extractReply(data) {
+    if (data == null) return null;
+    if (Array.isArray(data)) return data.length ? extractReply(data[0]) : null;
+    if (typeof data === 'string') return data;
+    if (typeof data === 'object') {
+      for (const k of ['output', 'reply', 'text', 'message', 'response', 'answer'])
+        if (typeof data[k] === 'string' && data[k].trim()) return data[k];
+      if (data.json) return extractReply(data.json);
+    }
+    return null;
+  }
+
+  async function callWebhook(payload) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 45000);
+    try {
+      const res = await fetch(getWebhook(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: ctrl.signal,
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const ct = res.headers.get('content-type') || '';
+      const data = ct.includes('application/json') ? await res.json() : await res.text();
+      return extractReply(data);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /* =====================================================================
+     CHAT UI
+  ===================================================================== */
+  function scrollChat() { chatMessages.scrollTo({ top: chatMessages.scrollHeight, behavior: 'smooth' }); }
+
+  function inlineFmt(s) {
+    return escapeHtml(s)
+      .replace(/\*\*(.+?)\*\*/g, '<strong class="font-semibold text-emerald-300">$1</strong>')
+      .replace(/\*(.+?)\*/g, '<em>$1</em>')
+      .replace(/`(.+?)`/g, '<code class="bot-code">$1</code>');
+  }
+
+  function formatBotText(text) {
+    const wrap = document.createElement('div');
+    text.split('\n').forEach(line => {
+      if (!line.trim()) return;
+      const row = document.createElement('div');
+      if (line.startsWith('• ')) {
+        row.className = 'bot-line bot-bullet';
+        row.innerHTML = '<span class="bullet-dot"></span>';
+        const span = document.createElement('span');
+        span.innerHTML = inlineFmt(line.slice(2));
+        row.appendChild(span);
+      } else {
+        row.className = 'bot-line';
+        row.innerHTML = inlineFmt(line);
+      }
+      wrap.appendChild(row);
+    });
+    return wrap;
+  }
+
+  function addBotMessage(text) {
+    const row = document.createElement('div');
+    row.className = 'msg msg--bot';
+    row.innerHTML = '<div class="avatar"><i class="fa-solid fa-robot"></i></div>';
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    bubble.appendChild(formatBotText(text));
+    row.appendChild(bubble);
+    chatMessages.appendChild(row);
+    scrollChat();
+  }
+
+  function addUserMessage(text, image) {
+    const row = document.createElement('div');
+    row.className = 'msg msg--user';
+    row.innerHTML = '<div class="avatar"><i class="fa-solid fa-user"></i></div>';
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble' + (image ? ' has-image' : '');
+    if (image) {
+      const img = document.createElement('img');
+      img.className = 'receipt-img';
+      img.src = image;
+      img.alt = 'Receipt image';
+      bubble.appendChild(img);
+    }
+    const label = text || (image ? 'Receipt attached' : '');
+    if (label) {
+      const t = document.createElement('div');
+      t.textContent = label;
+      t.style.whiteSpace = 'pre-wrap';
+      bubble.appendChild(t);
+    }
+    row.appendChild(bubble);
+    chatMessages.appendChild(row);
+    scrollChat();
+  }
+
+  function showTyping() {
+    if (typingRow) return;
+    typingRow = document.createElement('div');
+    typingRow.className = 'msg msg--bot';
+    typingRow.innerHTML = '<div class="avatar"><i class="fa-solid fa-robot"></i></div>' +
+      '<div class="bubble typing"><span class="tdot"></span><span class="tdot"></span><span class="tdot"></span></div>';
+    chatMessages.appendChild(typingRow);
+    scrollChat();
+  }
+
+  function hideTyping() { if (typingRow) { typingRow.remove(); typingRow = null; } }
+
+  function setSendBusy(b) {
+    sendBtn.disabled = b;
+    sendBtn.innerHTML = b
+      ? '<i class="fa-solid fa-circle-notch fa-spin"></i>'
+      : '<i class="fa-solid fa-paper-plane"></i>';
+  }
+
+  /* =====================================================================
+     RECEIPT OCR — the photo is read IN THE BROWSER (Tesseract.js from
+     CDN, lazy-loaded on first use), so "attach pic → read the price →
+     deduct from the right budget" needs ZERO n8n changes. The engine is
+     merely TOLD what landed so its Sheets write stays consistent.
+  ===================================================================== */
+
+  /* receipt text → { amount, merchant, category|null } | null  (pure) */
+  function parseReceiptText(text) {
+    const clean = String(text || '').replace(/\r/g, '');
+    if (!clean.trim()) return null;
+    const lines = clean.split('\n').map(l => l.trim()).filter(Boolean);
+
+    /* dates / phones / reference numbers poison number-picking — scrub them */
+    const scrub = l => String(l)
+      .replace(/\b\d{1,4}[-/.]\d{1,4}[-/.]\d{2,4}\b/g, ' ')   /* 16/10/2026 · 2026-10-16 */
+      .replace(/\b\d{7,}\b/g, ' ')                             /* phones, TRN, invoice ids */
+      .replace(/\b\d{1,2}:\d{2}(?::\d{2})?\b/g, ' ');          /* times */
+    const grab = l => {
+      const m = scrub(l).match(/\d[\d,]*(?:\.\d{1,2})?/g);
+      return m ? m.map(s => Number(String(s).replace(/,/g, ''))) : [];
+    };
+
+    /* 1 · amount — grand-total lines win, then TOTAL, then amount/due
+       words; last resort the largest plausible number (the total usually
+       dominates a slip). SUBTOTAL/TAX/VAT lines are skipped. */
+    const totalLine = /(grand\s*total|total\s*(?:amount|due|payable)|amount\s*(?:due|payable)|net\s*payable|balance\s*due|মোট)/i;
+    let amount = null;
+    const pickFrom = preds => {
+      for (const l of lines) {
+        if (!preds.some(p => p.test(l)) || /sub\s*total/i.test(l)) continue;
+        const nums = grab(l);
+        if (nums.length) { amount = nums[nums.length - 1]; return true; }
+      }
+      return false;
+    };
+    if (!pickFrom([totalLine])
+      && !pickFrom([/\btotal\b/i])
+      && !pickFrom([/\bamount\b/i, /\bdue\b/i, /\bpayable\b/i, /\bcash\b/i, /\btender\b/i, /\bpaid\b/i])) {
+      const sym  = lines.filter(l => /(?:৳|\btk\b|bdt|¥|￥|\$|\brs\b|€|£)/i.test(l)).flatMap(grab);
+      const all  = lines.flatMap(grab);
+      const pool = (sym.length ? sym : all).filter(v => v >= 1 && v <= 999999);
+      if (pool.length) amount = Math.max(...pool);
+    }
+    if (!Number.isFinite(amount) || amount <= 0 || amount > 1000000) return null;
+
+    /* 2 · category — trained name → static keywords → roll onto the
+       budgeted umbrella; the user's "Other" absorbs when it exists; a
+       LONE budgeted bucket takes it; otherwise null (ask the user —
+       never invent one) */
+    const hay = lines.join(' ');
+    let category = matchTrainedCategory(hay) || detectCategory(hay);
+    if (category) category = rollToBudgeted(category) || category;
+    if (!category) {
+      const other = Object.keys(CATEGORIES).find(k => k.toLowerCase() === 'other');
+      if (other) category = other;
+    }
+    if (!category) {
+      const budgeted = Object.keys(CATEGORIES).filter(k => (CATEGORIES[k].budget || 0) > 0);
+      if (budgeted.length === 1) category = budgeted[0];
+    }
+    /* receipts may ONLY land in categories THIS user actually has — a
+       static-keyword name the user never trained becomes null and the
+       app asks instead of inventing a parallel bucket */
+    if (category && !Object.keys(CATEGORIES).some(k => k.toLowerCase() === String(category).toLowerCase()))
+      category = null;
+
+    /* 3 · merchant — first meaningful printed line (store name sits on top) */
+    const NOISE = /^(tax\s*invoice|invoice|receipt|cash|sales|customer|merchant|www\.|http|phone|tel|mobile|address|date|time|order|bill|table|server|cashier|terminal|thank|vat|tin\b)/i;
+    let merchant = null;
+    for (const l of lines) {
+      const cand = l.replace(/[^A-Za-z0-9&'.\- ]/g, ' ').replace(/\s+/g, ' ').trim();
+      if (cand.length < 3 || NOISE.test(cand) || /^[0-9\s\-/.]+$/.test(cand)) continue;
+      merchant = titleCase(cand.split(/\s+/).slice(0, 3).join(' '));
+      break;
+    }
+
+    return {
+      amount: +amount.toFixed(2),
+      merchant: merchant || category || 'Receipt',
+      category: category || null,
+    };
+  }
+
+  /* ---------- browser-only OCR glue (not exercised by unit tests) ---------- */
+  let ocrLibPromise = null, ocrWorker = null;
+  function loadTesseract() {
+    if (typeof window !== 'undefined' && window.Tesseract) return Promise.resolve(window.Tesseract);
+    if (ocrLibPromise) return ocrLibPromise;
+    ocrLibPromise = new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+      s.onload  = () => window.Tesseract ? resolve(window.Tesseract) : reject(new Error('OCR library did not initialize'));
+      s.onerror = () => { ocrLibPromise = null; reject(new Error('OCR library download failed')); };
+      document.head.appendChild(s);
+    });
+    return ocrLibPromise;
+  }
+
+  async function runReceiptOCR(dataUrl) {
+    const T = await loadTesseract();
+    if (!ocrWorker) ocrWorker = await T.createWorker('eng');  /* eng traineddata downloads once, then cached */
+    const { data } = await ocrWorker.recognize(dataUrl);
+    return data && data.text ? data.text : '';
+  }
+
+  /* v8.3.2 — shrink a receipt photo before OCR + before it rides to n8n.
+     Phone photos are 3000-4000px: Tesseract crawls on them (often past the
+     60s timeout → the silent catch killed the whole receipt path), and the
+     base64 payload can top n8n's body limit. 1400px @0.75 keeps every
+     printed total perfectly legible while cutting both by ~10x.
+
+     v8.3.6 — READ-QUALITY FIX (probe-proven): fed a CLEAN upright receipt,
+     the agent reads it perfectly ("GREEN MART, ¥308.00, 2026-10-19" in
+     4.5s) — so the user's garbled "Wo. YER Whi"-style reads came from the
+     PHOTO, not the model. Two deterministic fixes here:
+     1 · EXIF-SAFE DECODE — phone photos carry a rotation tag; the old
+         Image() decode dropped it and the agent received a sideways
+         receipt ("image ulta palta"). createImageBitmap with
+         imageOrientation:'from-image' bakes the TRUE upright orientation
+         into every copy (OCR + engine).
+     2 · GLARE/SHADOW NORMALIZATION — receipts are monochrome print;
+         grayscale + contrast lift makes faded/glared text legible again
+         for BOTH Tesseract and Gemini (ctx.filter is a no-op where a
+         browser lacks it). */
+  function shrinkImage(dataUrl, maxDim = 1400, quality = 0.75) {
+    const paint = source => {
+      try {
+        const scale = Math.min(1, maxDim / Math.max(source.width, source.height));
+        const c = document.createElement('canvas');
+        c.width = Math.max(1, Math.round(source.width * scale));
+        c.height = Math.max(1, Math.round(source.height * scale));
+        const ctx = c.getContext('2d');
+        try { ctx.filter = 'grayscale(1) contrast(' + (maxDim >= 2000 ? '1.18' : '1.22') + ') brightness(1.06)'; } catch { /* old browser → unfiltered */ }
+        ctx.drawImage(source, 0, 0, c.width, c.height);
+        return c.toDataURL('image/jpeg', quality);
+      } catch { return dataUrl; }
+    };
+    const legacyDecode = () => new Promise((res, rej) => {
+      const img = new Image();
+      img.onload = () => res(img);
+      img.onerror = () => rej(new Error('decode failed'));
+      img.src = dataUrl;
+    });
+    const decode = () =>
+      fetch(dataUrl)
+        .then(r => r.blob())
+        .then(blob => createImageBitmap(blob, { imageOrientation: 'from-image' }));
+    return decode()
+      .then(paint)
+      .catch(() => legacyDecode().then(paint))
+      .catch(() => dataUrl);   /* v8.3.2 contract: never reject — worst case passthrough */
+  }
+
+  /* ---------- receipt reply cards ---------- */
+  function replyReceipt(exp) {
+    const limit = budgetOf(exp.category);
+    const spent = totalsByCategory()[exp.category] || 0;
+    const total = expenses.reduce((s, e) => s + e.amount, 0);
+    let out = `🧾 Receipt read — **${money(exp.amount)}** at **${exp.merchant}**, deducted from **${exp.category}**.\n`;
+    out += limit > 0
+      ? `• ${exp.category}: ${money(spent)} of ${money(limit)} — ${Math.round(spent / limit * 100)}% of limit, ${money(Math.max(0, limit - spent))} left\n`
+      : `• ${exp.category}: ${money(spent)} so far (no limit — try *"Set my ${exp.category} budget to 500"*)\n`;
+    out += `• Total spent: ${money(total)} · Remaining: **${money(Math.max(0, budgetTotal() - total))}**`;
+    return out;
+  }
+
+  function askReceiptCategory() {
+    const p = pendingReceipt;
+    const cats = Object.keys(CATEGORIES);
+    const hint = cats.length ? `Your categories: ${cats.join(', ')}.` : 'Train a budget first, e.g. *"Set my Food budget to 500"*.';
+    return `🧾 I read **${money(p ? p.amount : 0)}**${p && p.merchant ? ` at **${p.merchant}**` : ''} from the photo, but I couldn't match it to one of your categories.\nReply with just the category name — like *"Food"* — and I'll deduct it from that budget.\n${hint}`;
+  }
+
+  /* v8.3.2 — dead-end rescue card. Shown when a photo came in, the browser
+     OCR could not log it, and the cloud agent answered with an image
+     complaint (it is text-only until the n8n vision branch is built).
+     Gives the user a path that ALWAYS works: type the amount + store. */
+  function receiptFallbackCard() {
+    return `📷 The photo didn't give a confident read — no guesswork gets logged.
+Fastest fix: type the amount and store in one line, e.g. *"Spent ${CUR}120 at KFC"*, and I'll log it instantly against the right budget. Or retake the photo straight above the print, light ON the paper, no shadow.`;
+  }
+
+  /* v8.3.7 — the read-failure / dead-end reply shapes, hoisted to ONE
+     constant so both consumers agree: the reply renderer (rescue card)
+     and the v8.3.9 engine-confirmation parser below (an apology or an
+     "I couldn't write the row" is never a confirmation). */
+  const READ_FAIL_RE = /didn'?t receive|did not receive|not receive any|no image|can'?t see|cannot see|couldn'?t see|can'?t read|could not read|couldn'?t read|unable to (read|see|extract|recognize)|failed to (read|see|extract|recognize)|unreadable|too (blurry|dark|small)|blurry|unclear|can'?t make out|couldn'?t make out|hard to read|please (type|enter|provide|tell me)[^.]{0,30}(amount|total|manually)|(enter|provide|type)[^.]{0,14}manually/i;
+
+  /* =====================================================================
+     v8.3.9 — ENGINE CONFIRMATION MATERIALIZATION (pure)
+     The live bug (¥3917 Ecstasy receipt): the advanced path DEFERS a
+     dodgy OCR read to the engine — nothing is logged locally — so the
+     budget panel depends 100% on the sync read-back adopting the
+     engine-written row. But those read-back rows historically arrive
+     WITHOUT a usable userId tag (live n8n forensics), and the ownership
+     filter rightly rejects untagged rows with no local twin → the sheet
+     row is CORRECT while the panel shows ¥0 forever.
+     Fix: the engine's own success reply IS the write confirmation.
+     Parse the logged amount / category / merchant out of it and let the
+     caller materialize the row locally (sameSpend keeps it single).
+     Pure + tolerant: null for apologies, refusals, or a reply that
+     names none of the user's own categories (never invents one). */
+  function receiptFromReply(reply, pinCat) {
+    const txt = String(reply || '');
+    if (!txt.trim() || READ_FAIL_RE.test(txt)) return null;
+    if (/\b(?:couldn'?t|could not|failed to|unable to|did not|not able to)\s+(?:\w+\s+){0,2}?(?:log|write|save|add|record)/i.test(txt)) return null;
+    /* markdown bold/code markers stripped ONCE — every matcher below
+       sees plain words ("**Ecstasy**" must parse as Ecstasy) */
+    const plain = txt.replace(/\*+/g, '').replace(/`+/g, '');
+    /* dates / times / invoice numbers must never become the amount */
+    const scrubbed = plain
+      .replace(/#\d+/g, ' ')                                   /* invoice #59976 */
+      .replace(/\b\d{1,4}[-\/.]\d{1,4}[-\/.]\d{2,4}\b/g, ' ')  /* 2026-03-03 · 3/3/26 */
+      .replace(/\b\d{1,2}:\d{2}(?::\d{2})?\b/g, ' ')           /* times */
+      .replace(/\b\d{7,}\b/g, ' ');                            /* phones / TRNs */
+    /* 1 · amount — the FIRST real money figure of the confirmation; the
+       logged total leads the reply, limit recaps ("of ¥6000", "6000
+       limit", "65%") trail behind and are context-guarded anyway. */
+    let amount = null;
+    const re = /(¥|￥|৳|\btk\b|\$|rs\.?|€|£)?\s*(\d[\d,]*(?:\.\d{1,2})?)(?!\d)/gi;
+    for (const m of scrubbed.matchAll(re)) {
+      const v = Number(m[2].replace(/,/g, ''));
+      if (!Number.isFinite(v) || v <= 0 || v > 1000000) continue;
+      const before = scrubbed.slice(Math.max(0, m.index - 30), m.index).trim();
+      const after  = scrubbed.slice(m.index + m[0].length, m.index + m[0].length + 10).trim();
+      if (/(?:limit|budget|remaining|left|income|salary)\s*(?:is|:|=)?\s*$/i.test(before)) continue;
+      if (/^(?:%|limit|budget|remaining|left)/i.test(after)) continue;
+      amount = v; break;
+    }
+    if (!Number.isFinite(amount)) return null;
+    /* 2 · category — the app's own text-pinned category wins outright;
+       else an explicit "category: X / deducted from X" phrase; else any
+       of the user's OWN category names (budgeted buckets preferred). */
+    let category = pinCat || null;
+    if (!category) {
+      const m = plain.match(/(?:category|类别|deducted from|logged under|filed under|written under)\s*[:：]?\s*([A-Za-z][A-Za-z ]{0,24}?)(?=\.|,|;|\n|\||—|!|\?|，|、|$)/i);
+      if (m) category = Object.keys(CATEGORIES).find(k => k.toLowerCase() === m[1].trim().toLowerCase()) || null;
+    }
+    if (!category) {
+      const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const hits = Object.keys(CATEGORIES).filter(k => new RegExp('(^|[^A-Za-z])' + esc(k) + '([^A-Za-z]|$)', 'i').test(plain));
+      if (hits.length) category = hits.find(k => (CATEGORIES[k].budget || 0) > 0) || hits[0];
+    }
+    if (!category) return null;   /* never invent — the read-back owns the row */
+    /* 3 · merchant — "at Ecstasy" / "Merchant: Ecstasy"; cosmetic */
+    const mm = plain.match(/\b(?:at|from|merchant|store)\s+["'“”]?([A-Za-z][A-Za-z0-9&'.\- ]{1,30})/i);
+    const merchant = mm ? titleCase(mm[1].trim().replace(/\s+/g, ' ').split(/\s+/).slice(0, 3).join(' ')) : (category || 'Receipt');
+    return { amount: +amount.toFixed(2), category, merchant };
+  }
+
+  /* ------------------------------ send pipeline ------------------------------ */
+  async function handleSend(text, image) {
+    if (busy || !currentUser || (!text.trim() && !image)) return;
+    busy = true;
+    setSendBusy(true);
+
+    /* profile/training commands (income + multiple budgets) — handled
+       locally, each one saved to the engine under the user's email */
+    const cmds = parseProfileCommands(text);
+    if (cmds.length) {
+      addUserMessage(text, null);
+      await handleProfileCommands(cmds);
+      busy = false;
+      setSendBusy(false);
+      chatInput.focus();
+      return;
+    }
+
+    /* a receipt is waiting for its category ("I read ¥45 at Green Mart —
+       reply with the category") — a bare category reply completes it and
+       deducts from THAT budget */
+    if (pendingReceipt && !image && !parseExpense(text)) {
+      const hit = matchTrainedCategory(text) || detectCategory(text);
+      if (hit) {
+        const cat = rollToBudgeted(hit) || hit;
+        addUserMessage(text, null);
+        const entry = addExpense({ amount: pendingReceipt.amount, category: cat, merchant: pendingReceipt.merchant });
+        pendingReceipt = null;
+        addBotMessage(replyReceipt(entry));
+        busy = false;
+        setSendBusy(false);
+        chatInput.focus();
+        return;
+      }
+    }
+
+    addUserMessage(text, image);
+    clearAttach();
+
+    /* receipt photo — read it LOCALLY in the browser (Tesseract OCR),
+       log against the user's own category and deduct from that budget
+       immediately; the engine is then TOLD what landed so its Sheets
+       write stays consistent (the sync merge dedupes it). */
+    receiptTruth = null;                /* v8.3.7 — fresh per send; a stale truth can never leak */
+    let receiptExp = null, engineImage = null, ocrRaw = '', deferredOcr = false;
+    /* v8.3.8 — the user's text is parsed BEFORE the OCR runs: when the text
+       names a category ("spent on shopping"), that category must govern the
+       receipt row no matter what the local scan later guesses. */
+    const textCat = image ? (matchTrainedCategory(text || '') || detectCategory(text || '')) : null;
+    if (image) {
+      showTyping();
+      const original = image;             /* v8.3.5 — full-quality source kept for the engine copy */
+      try {
+        image = await shrinkImage(image);   /* v8.3.2 — faster OCR + ~10x smaller engine payload */
+        const raw = await Promise.race([
+          runReceiptOCR(image),
+          wait(60000).then(() => { throw new Error('OCR timed out'); }),
+        ]);
+        ocrRaw = String(raw || '').replace(/\s+/g, ' ').trim();  /* v8.3.7 — even a failed parse carries digits */
+        const hit = parseReceiptText(raw);
+        if (hit && hit.amount > 0) {
+          /* v8.3.8 — OCR CONFIDENCE GATE: a scan whose merchant came back
+             as sentinel garbage ("ERR", "??", no-vowel gibberish) is a
+             GARBAGE read — its digits are just as suspect. Auto-logging it
+             locally shielded the row from EVERY correction layer (no pin,
+             no receiptTruth, and the agent was told to COPY the garbage —
+             the exact ¥552/ERR/Other bug from the live screenshot). Such
+             scans are DEFERRED to the engine's vision instead: Gemini reads
+             the sharp 2000px photo (+ the raw transcript) and logs the real
+             printed total, while the text-named category still pins it. */
+          const ocrDodgy = !hit.merchant ||
+            /^(err(or)?|unknown|n\/a|null|none|misc(ellaneous)?|\?+|\.+|xx+)$/i.test(String(hit.merchant).trim()) ||
+            (String(hit.merchant).length <= 4 && !/[aeiou]/i.test(String(hit.merchant)));
+          if (ocrDodgy) {
+            deferredOcr = true;             /* engine vision owns the read; offline fallback keeps the digits */
+            pendingReceipt = { amount: hit.amount, merchant: hit.merchant };
+          } else if (textCat || hit.category) {
+            /* v8.3.8 — TEXT BEATS LOCAL OCR: the text-named category
+               overrides whatever the scan guessed (the old code logged the
+               scan's own "Other" and never even armed the pin). */
+            const cat = textCat ? (rollToBudgeted(textCat) || textCat) : hit.category;
+            receiptExp = addExpense({ amount: hit.amount, category: cat, merchant: hit.merchant });
+          } else {
+            pendingReceipt = { amount: hit.amount, merchant: hit.merchant };
+            receiptTruth = { amount: hit.amount, merchant: hit.merchant, at: Date.now() };  /* v8.3.7 — trusted OCR ground truth */
+          }
+        }
+      } catch { /* OCR unavailable (offline / CDN blocked) → engine vision or manual entry */ }
+      /* v8.3.5 — the agent now reads a SHARP 2000px @0.82 copy re-encoded from
+         the original, not the OCR-grade 1400px @0.75: Tesseract wanted speed,
+         Gemini wants legibility (garbled "Wo. YER Whi"-style merchant reads). */
+      if (!receiptExp) engineImage = await shrinkImage(original, 2000, 0.82);
+      hideTyping();
+    }
+
+    const exp = !receiptExp && text ? parseExpense(text) : null;
+    if (exp) addExpense(exp);
+
+    showTyping();
+
+    let reply = null, webhookOk = false;
+    const url = getWebhook();
+
+    /* v8.3.5 — CATEGORY PIN: the app parses the user's text with its OWN
+       category engine (the same battle-tested matcher that routes typed
+       expenses) and PINS the result. The agent is no longer asked to
+       judge a category — it is told. No text-named category → pin cleared,
+       so a stale pin can never leak into the next image message. */
+    const pinCat = image && !receiptExp ? textCat : null;   /* v8.3.8 — the SAME parse the OCR gate used */
+    categoryPin = pinCat ? { cat: pinCat, at: Date.now() } : null;
+
+    /* v8.3.7 — OCR TRANSCRIPT BRIDGE: whatever Tesseract managed to scan
+       (even a garbled, unparsable read) rides to the agent as TEXT next to
+       the photo, so Gemini can cross-check the noisy digits against the
+       image — the hybrid read neither modality matches alone. Empty when
+       no image went out or OCR never ran; scoped to THIS send only. */
+    const ocrBridge = image && !receiptExp && ocrRaw
+      ? `\n\n[FinAgent OCR transcript — the browser's own OCR scanned THIS photo${pendingReceipt ? '' : ' but could not confidently parse it'}; letters may be garbled, digits are usually accurate: "${ocrRaw.slice(0, 500)}". Cross-check the transcript against the photo and write the printed grand total.]`
+      : '';
+
+    if (url) {
+      try {
+        reply = await callWebhook({
+          action: 'chat',
+          chatInput: (receiptExp
+              ? `The user attached a receipt photo that the app already read and logged: ${money(receiptExp.amount)} at ${receiptExp.merchant}, category ${receiptExp.category}. Write exactly ONE expense row to the sheet for userId ${currentUser.email} — amount ${receiptExp.amount}, merchant ${receiptExp.merchant}, category ${receiptExp.category}, date today. Do not log a second row; just confirm briefly.`
+              : (text || 'Please log this receipt as an expense.')
+                + (image && pendingReceipt && receiptTruth
+                  ? `\n\n[FinAgent local OCR note — the app's own OCR already read THIS receipt: total ${money(pendingReceipt.amount)}${pendingReceipt.merchant ? `, merchant "${pendingReceipt.merchant}"` : ''}. Write the row with THIS exact total and merchant — the app verifies both against its OCR read.]`
+                  : '')
+                + (deferredOcr
+                  ? `\n\n[FinAgent OCR warning — the browser's own scan of THIS photo came back GARBAGE (unreadable merchant${pendingReceipt ? ` "${pendingReceipt.merchant}"` : ''}, digits just as suspect). Do NOT copy the browser OCR: treat the PHOTO as the only source of truth and read the printed grand total, merchant and date from the image yourself.]`
+                  : ''))
+            + ocrBridge
+            + ((exp || receiptExp || image || /spent|paid|bought|cost|logged|expense/i.test(text || '')) ? categoryGuidance() : '')
+            + (image && !receiptExp ? receiptGuidance(currentUser.email) : '')
+            + (pinCat
+              ? `\n\n[FinAgent CATEGORY PIN — the app parsed the user's text with its own category engine: the category for this expense is PINNED to "${pinCat}". Write exactly "${pinCat}" in the category column of the row — do not choose, do not guess, any other category. The image is for the amount, merchant and date only.]`
+              : ''),
+          image: receiptExp ? image : (engineImage || image || null),
+          sessionId,
+          userId: currentUser.email,
+          textCategory: pinCat || undefined,
+          currency: 'CNY',
+          timestamp: new Date().toISOString(),
+          source: 'finagent-web',
+        });
+        webhookOk = true;
+        if (exp) { exp.status = 'synced'; saveData(); renderTransactions(); }
+      } catch (err) {
+        toast('error', 'Webhook unreachable — replying with the local agent. (' +
+          (err.name === 'AbortError' ? 'timeout' : err.message) + ')');
+      }
+    }
+
+    await wait(550 + Math.random() * 450);
+    hideTyping();
+
+    if (receiptExp)          addBotMessage(replyReceipt(receiptExp));
+    else if (pendingReceipt && deferredOcr && !webhookOk && pinCat) {
+      /* v8.3.8 — offline fallback: the engine is unreachable, so the
+         scanned digits log under the TEXT-pinned category (best effort) */
+      const e = addExpense({ amount: pendingReceipt.amount, category: pinCat, merchant: pendingReceipt.merchant });
+      pendingReceipt = null;
+      addBotMessage(replyReceipt(e));
+    }
+    else if (pendingReceipt && deferredOcr && !webhookOk) addBotMessage(askReceiptCategory());
+    else if (pendingReceipt && !deferredOcr) addBotMessage(askReceiptCategory());
+    else if (pendingReceipt) pendingReceipt = null;   /* v8.3.8 — engine owns the row; no stale local completion */
+
+    const replyTxt = reply && String(reply).trim();
+    if (replyTxt && image && !receiptExp && !pendingReceipt &&
+        READ_FAIL_RE.test(replyTxt)) {
+      /* v8.3.7 — read-failure rescue: whether the agent says it never saw
+         the photo (v8.3.2) or admits it could not READ it ("wrong read",
+         "too blurry", "please provide the amount manually" — the apology
+         dead-end from the live bug report), the user gets the SAME
+         always-works card: retake tips + type-the-amount path. */
+      addBotMessage(receiptFallbackCard());
+    } else if (replyTxt) {
+      addBotMessage(replyTxt);
+    } else if (webhookOk && !receiptExp && !pendingReceipt)  addBotMessage(UNSTRUCTURED_REPLY);
+    else if (!webhookOk && !receiptExp && !pendingReceipt) {
+      if (image && !text.trim()) addBotMessage(imageOnlyReply());
+      else                       addBotMessage(localAgent(text || ''));
+    }
+
+    /* v8.3.9 — ENGINE CONFIRMATION MATERIALIZATION: on the engine-owned
+       receipt path (photo in, nothing logged locally) the budget panel
+       must not gamble on the read-back adopting the engine-written row
+       (untagged read-back rows are rightly rejected as twin-less). The
+       engine's own success reply IS the proof of the write — materialize
+       the row locally so the category budget deducts THIS instant.
+       ORDERING IS LOAD-BEARING: this block must run BEFORE the read-back
+       below, because that call snapshots the ledger it was invoked with
+       and its merge assignment would wipe a row added afterwards.
+       sameSpend dedupe keeps it single; when the read-back DOES find the
+       tagged sheet row, this local row simply flips to "Synced". */
+    if (webhookOk && image && !receiptExp && replyTxt && !READ_FAIL_RE.test(replyTxt)) {
+      const cand = receiptFromReply(replyTxt, pinCat);
+      if (cand) {
+        /* v8.3.7 receiptTruth (trusted local OCR) outranks a reply misread */
+        if (receiptTruth && Date.now() - receiptTruth.at < 10 * 60 * 1000 &&
+            Math.abs(cand.amount - receiptTruth.amount) > 0.01) cand.amount = receiptTruth.amount;
+        if (!expenses.some(le => sameSpend(le, { amount: cand.amount, category: cand.category, merchant: cand.merchant, ts: Date.now() }))) {
+          addExpense(cand);
+          toast('success', `Receipt logged — ${CUR}${cand.amount.toFixed(2)} deducted from ${cand.category}.`);
+        }
+      }
+    }
+
+    if (webhookOk) syncFromEngine().catch(() => {});
+
+    if (!url && !hintedLocal) {
+      hintedLocal = true;
+      toast('info', 'Running in local agent mode — connect n8n via the gear icon.');
+    }
+
+    busy = false;
+    setSendBusy(false);
+    chatInput.focus();
+  }
+
+  /* ------------------------------ attachment ------------------------------ */
+  function showAttachPreview(name, dataUrl) {
+    if (!attachPreview) return;
+    attachPreview.classList.remove('hidden');
+    attachPreview.innerHTML = `
+      <div class="attach-chip">
+        <img src="${dataUrl}" alt="receipt preview">
+        <div class="min-w-0">
+          <p class="max-w-[180px] truncate text-[12px] font-medium text-slate-100">${escapeHtml(name)}</p>
+          <p class="text-[10px] text-slate-500">Receipt ready — sent as base64</p>
+        </div>
+        <button type="button" id="attachRemove" class="x" aria-label="Remove attachment">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>`;
+    $('attachRemove').addEventListener('click', clearAttach);
+    attachBtn.classList.add('active');
+  }
+
+  function clearAttach() {
+    pendingImage = null;
+    if (attachPreview) { attachPreview.classList.add('hidden'); attachPreview.innerHTML = ''; }
+    if (receiptInput) receiptInput.value = '';
+    if (attachBtn)     attachBtn.classList.remove('active');
+  }
+
+  /* =====================================================================
+     WEBHOOK MODAL
+  ===================================================================== */
+  function setEngineState(state) {   /* 'active' | 'offline' | 'standby' */
+    engineBadge.classList.toggle('status-badge--on',  state === 'active');
+    engineBadge.classList.toggle('status-badge--off', state !== 'active');
+    engineBadgeText.textContent = state === 'active' ? 'n8n Engine Active'
+                                : state === 'offline' ? 'n8n Engine Offline'
+                                : 'n8n Engine Standby';
+  }
+
+  function updateBadge() {
+    /* immediate paint from config; verifyEngine() confirms real reachability */
+    setEngineState(getWebhook() ? 'active' : 'standby');
+  }
+
+  /* Cheap engine health probe — uses the getProfile branch (no Gemini call),
+     so it answers fast. ANY HTTP reply (even an error payload) proves the
+     workflow is reachable; only a network failure / abort shows Offline. */
+  async function verifyEngine() {
+    if (!getWebhook()) { setEngineState('standby'); return; }
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 12000);
+    try {
+      const res = await fetch(getWebhook(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'getProfile',
+          userId: (currentUser && currentUser.email) || 'engine-ping@finagent.ai',
+          source: 'finagent-web',
+          timestamp: new Date().toISOString(),
+        }),
+        signal: ctrl.signal,
+      });
+      setEngineState(res.ok ? 'active' : 'offline');
+      if (res.ok) flushPendingRegisters().catch(() => {});   /* v8.3 — engine is back → sync parked registrations */
+    } catch {
+      setEngineState('offline');
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /* =====================================================================
+     AMBIENT TREND ARROWS — pure decoration, market-ticker feel.
+     Spawns ~14 Font-Awesome arrows inside .bg-scene with randomized
+     position/size/speed; the CSS keyframe (arrowRise) floats each one
+     from below the viewport to the top, forever. Negative animation-delay
+     means they are already mid-flight on page load. Honors reduced motion.
+  ===================================================================== */
+  function spawnTrendArrows() {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    let scene = document.querySelector('.bg-scene');
+    if (!scene) {
+      scene = document.createElement('div');
+      scene.className = 'bg-scene';
+      document.body.prepend(scene);
+    }
+    if (scene.dataset.arrows) return;        /* guard against double-spawn */
+    scene.dataset.arrows = '1';
+    const COUNT = 14;
+    for (let i = 0; i < COUNT; i++) {
+      const el = document.createElement('i');
+      el.className = 'fa-solid bg-arrow ' +
+        (i % 3 === 0 ? 'fa-arrow-up-long' : 'fa-arrow-trend-up') +
+        (i % 4 === 0 ? ' bg-arrow--cy' : '');
+      el.style.fontSize = (13 + Math.random() * 22).toFixed(0) + 'px';          /* 13–35px */
+      el.style.left = (Math.random() * 100).toFixed(2) + '%';
+      el.style.animationDuration = (14 + Math.random() * 16).toFixed(1) + 's';  /* 14–30s per rise */
+      el.style.animationDelay = (-Math.random() * 30).toFixed(1) + 's';         /* already rising */
+      el.style.setProperty('--op', (0.06 + Math.random() * 0.09).toFixed(2));   /* 0.06–0.15, subtle */
+      el.style.setProperty('--sway', ((Math.random() * 60) - 30).toFixed(0) + 'px');
+      scene.appendChild(el);
+    }
+  }
+
+  function openModal() {
+    webhookInput.value = getWebhook();
+    modalOverlay.classList.add('open');
+    document.body.style.overflow = 'hidden';
+    requestAnimationFrame(() => webhookInput.focus());
+  }
+
+  function closeModal() {
+    modalOverlay.classList.remove('open');
+    document.body.style.overflow = '';
+  }
+
+  /* =====================================================================
+     EVENT BINDINGS + INIT
+  ===================================================================== */
+  function bindEvents() {
+    tabLoginBtn.addEventListener('click', () => switchTab('login'));
+    tabRegisterBtn.addEventListener('click', () => switchTab('register'));
+    loginForm.addEventListener('submit', handleLogin);
+    registerForm.addEventListener('submit', handleRegister);
+    demoBtn.addEventListener('click', () => {
+      clearFormErrors();
+      seedDemoUser();
+      toast('success', 'Signed in with the demo account.');
+      enterApp({ name: 'Demo User', email: 'demo@finagent.ai' });
+    });
+    logoutBtn.addEventListener('click', handleLogout);
+
+    chatForm.addEventListener('submit', e => {
+      e.preventDefault();
+      const text = chatInput.value.trim();
+      if (!text && !pendingImage) { chatInput.focus(); return; }
+      chatInput.value = '';
+      handleSend(text, pendingImage);
+    });
+
+    clearChatBtn.addEventListener('click', () => {
+      hideTyping();
+      chatMessages.innerHTML = '';
+      if (currentUser) {
+        addBotMessage(`Conversation cleared — your training and ledger are untouched.
+Ask me anything, or tap a quick chip below.`);
+      }
+      toast('info', 'Conversation cleared.');
+    });
+
+    /* paperclip opens the file picker — skipped when index.html already
+       triggers it (label wrap or inline onclick), so it never opens twice */
+    if (attachBtn && receiptInput && !attachBtn.closest('label') && !attachBtn.getAttribute('onclick'))
+      attachBtn.addEventListener('click', e => { e.preventDefault(); receiptInput.click(); });
+
+    if (receiptInput) receiptInput.addEventListener('change', e => {
+      const f = e.target.files[0];
+      if (!f) return;
+      if (!f.type.startsWith('image/')) { toast('error', 'Please attach an image file.'); return; }
+      if (f.size > 4 * 1024 * 1024)     { toast('error', 'Receipt image must be under 4 MB.'); return; }
+      const reader = new FileReader();
+      reader.onload = () => { pendingImage = reader.result; showAttachPreview(f.name, pendingImage); };
+      reader.readAsDataURL(f);
+      e.target.value = '';
+    });
+
+    webhookBtn.addEventListener('click', openModal);
+    modalClose.addEventListener('click', closeModal);
+    modalCancel.addEventListener('click', closeModal);
+    modalOverlay.addEventListener('click', e => { if (e.target === modalOverlay) closeModal(); });
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape' && modalOverlay.classList.contains('open')) closeModal();
+    });
+
+    webhookForm.addEventListener('submit', e => {
+      e.preventDefault();
+      const v = webhookInput.value.trim();
+      if (v) {
+        try {
+          const u = new URL(v);
+          if (!/^https?:$/.test(u.protocol)) throw new Error('protocol');
+        } catch {
+          toast('error', "That doesn't look like a valid HTTP(S) URL.");
+          return;
+        }
+      }
+      if (v) localStorage.setItem(WEBHOOK_KEY, v);
+      else   localStorage.removeItem(WEBHOOK_KEY);
+      updateBadge();
+      verifyEngine().catch(() => {});   /* confirm the saved endpoint for real */
+      toast('success', v ? 'Webhook saved — engine now drives auth, ledger & chat.' : 'Endpoint cleared — running everything locally.');
+      closeModal();
+      if (v && currentUser) syncFromEngine({ silent: false }).catch(() => {});
+    });
+
+    /* Test Connection — 20s timeout: this request runs through the full
+       AI Agent (Gemini call included) */
+    testWebhookBtn.addEventListener('click', async () => {
+      const url = webhookInput.value.trim();
+      if (!url) { toast('info', 'Paste your n8n webhook URL first.'); webhookInput.focus(); return; }
+      const original = testWebhookBtn.innerHTML;
+      testWebhookBtn.disabled = true;
+      testWebhookBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Testing…';
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 20000);
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'chat', chatInput: '__connection_test__', source: 'finagent-config', timestamp: new Date().toISOString() }),
+          signal: ctrl.signal,
+        });
+        if (res.ok) toast('success', `Webhook responded — HTTP ${res.status}. You're wired up.`);
+        else        toast('error', `Endpoint replied with HTTP ${res.status}.`);
+      } catch (err) {
+        toast('error', err.name === 'AbortError'
+          ? 'No response within 20 s — check the URL, CORS, or the agent may be rate-limited. Try again in a minute.'
+          : 'Request failed — check the URL and CORS settings.');
+      } finally {
+        clearTimeout(timer);
+        testWebhookBtn.disabled = false;
+        testWebhookBtn.innerHTML = original;
+      }
+    });
+  }
+
+  function renderChips() {
+    quickChips.innerHTML = CHIPS.map((c, i) =>
+      `<button type="button" class="chip" data-i="${i}"><i class="fa-solid ${c.icon}"></i>${c.label}</button>`).join('');
+    quickChips.addEventListener('click', e => {
+      const btn = e.target.closest('.chip');
+      if (!btn || busy || !currentUser) return;
+      handleSend(CHIPS[+btn.dataset.i].label, null);
+    });
+  }
+
+  function init() {
+    seedDemoUser();
+    buildBudgetRows();
+    renderChips();
+    bindEvents();
+
+    /* deploy verification — the browser TAB title shows the build instantly
+       (no DevTools, no Ctrl+F needed). If the tab does not say v8.3.9, the
+       site is still serving the OLD script.js — re-deploy + hard-refresh. */
+    document.title = 'FinAgent AI · v8.3.9';
+    console.log(`%c${BUILD_TAG} — register auto-sync + per-user isolation + receipt UI-sync + text-category PIN + EXIF-upright receipt image + REAL-GEMINI vision protocol + OCR transcript bridge + sentinel judge + OCR CONFIDENCE GATE + engine confirmation materialization (budget panel syncs with the sheet) LIVE`,
+      'background:#10B981;color:#0B0F19;font-weight:bold;padding:2px 8px;border-radius:4px');
+
+    try {
+      const raw = localStorage.getItem(SESSION_KEY);
+      if (raw) {
+        const user = JSON.parse(raw);
+        if (user && user.email) { enterApp(user); return; }
+      }
+    } catch { localStorage.removeItem(SESSION_KEY); }
+
+    document.documentElement.classList.remove('authed');
+    updateBadge();
+    spawnTrendArrows();
+    setTimeout(() => loginEmail.focus(), 450);
+  }
+
+  document.addEventListener('DOMContentLoaded', init);
+})();
