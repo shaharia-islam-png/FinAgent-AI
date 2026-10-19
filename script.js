@@ -12,7 +12,7 @@
 
   /* BUILD TAG — Ctrl+F this string on the LIVE /script.js after deploying
      to prove the new file is really being served (Netlify caches hard). */
-  const BUILD_TAG = 'finagent-v8.3.6-clear-receipt';
+  const BUILD_TAG = 'finagent-v8.3.7-real-gemini-read';
   /* CACHE_VERSION — bump this to force EVERY device to discard its old
      local snapshot once. v8.2 = 8: pre-v8 caches may hold categories the
      old buggy sync adopted from a shared sheet (a stranger's budgets
@@ -191,6 +191,9 @@
   let engineSynced = false;
   let pendingImage = null;
   let pendingReceipt = null;   /* receipt read by OCR — amount known, category pending */
+  let receiptTruth = null;     /* v8.3.7 — {amount, merchant, at}: OCR ground truth of the LAST
+                                  image send; the sync judge overrules vision misreads with it.
+                                  Cleared on every send — a stale truth can never leak. */
   let categoryPin = null;      /* v8.3.5 — {cat, at}: category the app itself parsed from the user's
                                   text on the last image message; syncFromEngine enforces it on fresh
                                   agent rows for 10 min (vision misreads can no longer win) */
@@ -610,6 +613,34 @@
           if (p.e.category && p.e.category !== categoryPin.cat &&
               !localLedger.some(le => sameSpend(le, p.e)))
             p.e.category = categoryPin.cat;
+        }
+      }
+      /* v8.3.7 — SENTINEL JUDGE: when the browser's own OCR read THIS
+         receipt (receiptTruth), the agent's fresh row must agree with
+         the pixels — a vision misread of the total, or a sentinel
+         garbage value ("ERR" merchant, "Miscellaneous" category), is
+         corrected HERE deterministically, exactly like the pin. Without
+         OCR ground truth only sentinel categories are repaired (to the
+         pinned category, else the user's own Other), so garbage like
+         "Miscellaneous" can never seed a phantom panel bucket again.
+         Untagged/foreign rows and rows with a local twin stay untouched. */
+      const truth = receiptTruth && Date.now() - receiptTruth.at < 10 * 60 * 1000 ? receiptTruth : null;
+      const mineTag = currentUser.email.toLowerCase();
+      for (const p of pairs) {
+        if (!p.e || p.tag !== mineTag) continue;
+        if (localLedger.some(le => sameSpend(le, p.e))) continue;
+        if (truth) {
+          if (Math.abs((p.e.amount || 0) - truth.amount) > 0.01) p.e.amount = truth.amount;
+          if (!p.e.merchant || /^(err(or)?|unknown|n\/a|null|none|\?+|misc(ellaneous)?)$/i.test(String(p.e.merchant).trim()))
+            p.e.merchant = truth.merchant || 'Receipt';
+        }
+        if (!p.e.category || /^(misc(ellaneous)?|unknown|n\/a|null|none|err(or)?|\?+|various|test)$/i.test(String(p.e.category).trim())) {
+          const pinLive = categoryPin && Date.now() - categoryPin.at < 10 * 60 * 1000 && categoryPin.cat;
+          if (pinLive && p.e.category !== pinLive) p.e.category = pinLive;
+          else {
+            const other = Object.keys(CATEGORIES).find(k => k.toLowerCase() === 'other');
+            if (other && p.e.category !== other) p.e.category = other;
+          }
         }
       }
       /* adoption rule — (a) rows TAGGED with this email are authoritative
@@ -1500,10 +1531,15 @@ Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining bud
 
   /* appended to image (receipt) messages — the engine must READ the
      picture and log from the user's own categories, never invent one.
-     With the sheet write using this category, the app's roll-up deducts
-     from the right budget automatically on the next sync. */
+     v8.3.7 VISION-FIRST: the model is ordered to read the photo like a
+     bookkeeper (Chinese + English total keywords), to take the category
+     from what the receipt sells, and to NEVER answer with a sentinel
+     ("ERR"/"Unknown"/"Miscellaneous") or ask the user to retype the
+     amount — that apology dead-end is gone. With the sheet write using
+     this category, the app's roll-up deducts from the right budget
+     automatically on the next sync. */
   function receiptGuidance(email) {
-    return `\n\n[FinAgent receipt note — the user attached a receipt/payment screenshot. Read the image: extract the TOTAL amount actually paid, the merchant/store name, and the date. Log it as ONE expense for this user. SHEET ROW CONTRACT — the row's userId column MUST be exactly "${email}" (never a name, never blank); amount column = plain number only, no currency symbol or comma (write 3917.00, never ¥3917.00); date = YYYY-MM-DD; merchant = store name. Amount in CNY. CATEGORY PRECEDENCE — the user's text beats the picture: if the message text names a category (e.g. "spent on shopping budget" → Shopping, "food" → Food), the row's category MUST be exactly that named category, never "Other" and never a guess; use the image's own hints ONLY when the text names no category. Category must still be exactly one of the user's own categories (see the FinAgent system note). If the total is unreadable or ambiguous, ask the user instead of guessing.]`;
+    return `\n\n[FinAgent receipt note — the user attached a receipt/payment screenshot. You ARE a vision model: READ THE PHOTO ITSELF, line by line, like a human bookkeeper — the picture is the source of truth for the total, merchant and date. TOTAL: find the printed grand total — 合计, 总计, 实付, 实收, 应付金额, Total, Grand Total, Amount Due, Total Payable, Balance Due — the big bold final figure; NEVER a subtotal, unit price or line item. MERCHANT: the store/shop name printed at the top. Values like "ERR", "Error", "Unknown", "N/A", "???" or blank are FORBIDDEN as merchant — write the best name you can actually see on the photo. CATEGORY: read it FROM THE IMAGE — what the receipt sells decides: food/restaurant/grocery items → the user's Food or Dining; clothes/shoes/electronics/mall goods → Shopping; tuition/school/books/stationery → Education; taxi/metro/fuel/parking → Transport; medicine/pharmacy/hospital → Health; electricity/water/gas/internet bills → Utilities; hotel/flights/trips → Travel; movies/games → Entertainment. Use ONLY the user's own category names (see the FinAgent system note). "Other"/"Miscellaneous" is ONLY for a photo where genuinely nothing recognizable appears — a receipt whose items you can read must NEVER land there. TEXT BEATS IMAGE: if the user's own message text names a category, that exact named category overrides the image hints (see TEXT CATEGORY WINS). SHEET ROW CONTRACT — the row's userId column MUST be exactly "${email}" (never a name, never blank); amount column = plain number only, no currency symbol or comma (write 3917.00, never ¥3917.00); date = YYYY-MM-DD; merchant = store name. Amount in CNY. NEVER ask the user to type the amount manually when a photo is attached — reading it is YOUR job: write the row with your best reading of the printed total and, only if a part was truly unclear, say exactly which part. Log it as ONE expense for this user.]`;
   }
 
   /* =====================================================================
@@ -1807,7 +1843,8 @@ Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining bud
      complaint (it is text-only until the n8n vision branch is built).
      Gives the user a path that ALWAYS works: type the amount + store. */
   function receiptFallbackCard() {
-    return `📷 I couldn't read the photo clearly (OCR unavailable or the print is too small).\nNo problem — just type the amount and store in one line, e.g. *"Spent ${CUR}120 at KFC"*, and I'll log it instantly against the right budget.`;
+    return `📷 The photo didn't give a confident read — no guesswork gets logged.
+Fastest fix: type the amount and store in one line, e.g. *"Spent ${CUR}120 at KFC"*, and I'll log it instantly against the right budget. Or retake the photo straight above the print, light ON the paper, no shadow.`;
   }
 
   /* ------------------------------ send pipeline ------------------------------ */
@@ -1853,7 +1890,8 @@ Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining bud
        log against the user's own category and deduct from that budget
        immediately; the engine is then TOLD what landed so its Sheets
        write stays consistent (the sync merge dedupes it). */
-    let receiptExp = null, engineImage = null;
+    receiptTruth = null;                /* v8.3.7 — fresh per send; a stale truth can never leak */
+    let receiptExp = null, engineImage = null, ocrRaw = '';
     if (image) {
       showTyping();
       const original = image;             /* v8.3.5 — full-quality source kept for the engine copy */
@@ -1863,12 +1901,14 @@ Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining bud
           runReceiptOCR(image),
           wait(60000).then(() => { throw new Error('OCR timed out'); }),
         ]);
+        ocrRaw = String(raw || '').replace(/\s+/g, ' ').trim();  /* v8.3.7 — even a failed parse carries digits */
         const hit = parseReceiptText(raw);
         if (hit && hit.amount > 0) {
           if (hit.category) {
             receiptExp = addExpense({ amount: hit.amount, category: hit.category, merchant: hit.merchant });
           } else {
             pendingReceipt = { amount: hit.amount, merchant: hit.merchant };
+            receiptTruth = { amount: hit.amount, merchant: hit.merchant, at: Date.now() };  /* v8.3.7 — OCR ground truth */
           }
         }
       } catch { /* OCR unavailable (offline / CDN blocked) → engine vision or manual entry */ }
@@ -1896,6 +1936,15 @@ Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining bud
       ? (matchTrainedCategory(text || '') || detectCategory(text || '')) : null;
     categoryPin = pinCat ? { cat: pinCat, at: Date.now() } : null;
 
+    /* v8.3.7 — OCR TRANSCRIPT BRIDGE: whatever Tesseract managed to scan
+       (even a garbled, unparsable read) rides to the agent as TEXT next to
+       the photo, so Gemini can cross-check the noisy digits against the
+       image — the hybrid read neither modality matches alone. Empty when
+       no image went out or OCR never ran; scoped to THIS send only. */
+    const ocrBridge = image && !receiptExp && ocrRaw
+      ? `\n\n[FinAgent OCR transcript — the browser's own OCR scanned THIS photo${pendingReceipt ? '' : ' but could not confidently parse it'}; letters may be garbled, digits are usually accurate: "${ocrRaw.slice(0, 500)}". Cross-check the transcript against the photo and write the printed grand total.]`
+      : '';
+
     if (url) {
       try {
         reply = await callWebhook({
@@ -1904,8 +1953,9 @@ Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining bud
               ? `The user attached a receipt photo that the app already read and logged: ${money(receiptExp.amount)} at ${receiptExp.merchant}, category ${receiptExp.category}. Write exactly ONE expense row to the sheet for userId ${currentUser.email} — amount ${receiptExp.amount}, merchant ${receiptExp.merchant}, category ${receiptExp.category}, date today. Do not log a second row; just confirm briefly.`
               : (text || 'Please log this receipt as an expense.')
                 + (image && pendingReceipt
-                  ? `\n\n[FinAgent local OCR note — the app's own OCR already read THIS receipt: total ${money(pendingReceipt.amount)}${pendingReceipt.merchant ? `, merchant "${pendingReceipt.merchant}"` : ''}. Write the row with THIS total after checking it against the image; only if the image CLEARLY shows a different total, use the image's total and say so.]`
+                  ? `\n\n[FinAgent local OCR note — the app's own OCR already read THIS receipt: total ${money(pendingReceipt.amount)}${pendingReceipt.merchant ? `, merchant "${pendingReceipt.merchant}"` : ''}. Write the row with THIS exact total and merchant — the app verifies both against its OCR read.]`
                   : ''))
+            + ocrBridge
             + ((exp || receiptExp || image || /spent|paid|bought|cost|logged|expense/i.test(text || '')) ? categoryGuidance() : '')
             + (image && !receiptExp ? receiptGuidance(currentUser.email) : '')
             + (pinCat
@@ -1935,10 +1985,12 @@ Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining bud
 
     const replyTxt = reply && String(reply).trim();
     if (replyTxt && image && !receiptExp && !pendingReceipt &&
-        /didn'?t receive|did not receive|not receive any|no image|can'?t see|cannot see|couldn'?t see|can'?t read the image|please upload|attach the (receipt|image|photo)/i.test(replyTxt)) {
-      /* v8.3.2 — the cloud agent is text-only (no vision branch yet): it
-         never saw the photo, and its "I didn't receive the image" reply is
-         a dead end. Replace it with a card whose next step always works. */
+        /didn'?t receive|did not receive|not receive any|no image|can'?t see|cannot see|couldn'?t see|can'?t read|could not read|couldn'?t read|unable to (read|see|extract|recognize)|failed to (read|see|extract|recognize)|unreadable|too (blurry|dark|small)|blurry|unclear|can'?t make out|couldn'?t make out|hard to read|please (type|enter|provide|tell me)[^.]{0,30}(amount|total|manually)|(enter|provide|type)[^.]{0,14}manually/i.test(replyTxt)) {
+      /* v8.3.7 — read-failure rescue: whether the agent says it never saw
+         the photo (v8.3.2) or admits it could not READ it ("wrong read",
+         "too blurry", "please provide the amount manually" — the apology
+         dead-end from the live bug report), the user gets the SAME
+         always-works card: retake tips + type-the-amount path. */
       addBotMessage(receiptFallbackCard());
     } else if (replyTxt) {
       addBotMessage(replyTxt);
@@ -2202,10 +2254,10 @@ Ask me anything, or tap a quick chip below.`);
     bindEvents();
 
     /* deploy verification — the browser TAB title shows the build instantly
-       (no DevTools, no Ctrl+F needed). If the tab does not say v8.3.6, the
+       (no DevTools, no Ctrl+F needed). If the tab does not say v8.3.7, the
        site is still serving the OLD script.js — re-deploy + hard-refresh. */
-    document.title = 'FinAgent AI · v8.3.6';
-    console.log(`%c${BUILD_TAG} — register auto-sync + per-user isolation + receipt UI-sync + text-category PIN + EXIF-upright glare-free receipt image LIVE`,
+    document.title = 'FinAgent AI · v8.3.7';
+    console.log(`%c${BUILD_TAG} — register auto-sync + per-user isolation + receipt UI-sync + text-category PIN + EXIF-upright receipt image + REAL-GEMINI vision protocol + OCR transcript bridge + sentinel judge LIVE`,
       'background:#10B981;color:#0B0F19;font-weight:bold;padding:2px 8px;border-radius:4px');
 
     try {
