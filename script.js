@@ -12,7 +12,7 @@
 
   /* BUILD TAG — Ctrl+F this string on the LIVE /script.js after deploying
      to prove the new file is really being served (Netlify caches hard). */
-  const BUILD_TAG = 'finagent-v8.3.5-receipt-pin';
+  const BUILD_TAG = 'finagent-v8.3.6-clear-receipt';
   /* CACHE_VERSION — bump this to force EVERY device to discard its old
      local snapshot once. v8.2 = 8: pre-v8 caches may hold categories the
      old buggy sync adopted from a shared sheet (a stranger's budgets
@@ -1738,26 +1738,48 @@ Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining bud
      Phone photos are 3000-4000px: Tesseract crawls on them (often past the
      60s timeout → the silent catch killed the whole receipt path), and the
      base64 payload can top n8n's body limit. 1400px @0.75 keeps every
-     printed total perfectly legible while cutting both by ~10x. */
+     printed total perfectly legible while cutting both by ~10x.
+
+     v8.3.6 — READ-QUALITY FIX (probe-proven): fed a CLEAN upright receipt,
+     the agent reads it perfectly ("GREEN MART, ¥308.00, 2026-10-19" in
+     4.5s) — so the user's garbled "Wo. YER Whi"-style reads came from the
+     PHOTO, not the model. Two deterministic fixes here:
+     1 · EXIF-SAFE DECODE — phone photos carry a rotation tag; the old
+         Image() decode dropped it and the agent received a sideways
+         receipt ("image ulta palta"). createImageBitmap with
+         imageOrientation:'from-image' bakes the TRUE upright orientation
+         into every copy (OCR + engine).
+     2 · GLARE/SHADOW NORMALIZATION — receipts are monochrome print;
+         grayscale + contrast lift makes faded/glared text legible again
+         for BOTH Tesseract and Gemini (ctx.filter is a no-op where a
+         browser lacks it). */
   function shrinkImage(dataUrl, maxDim = 1400, quality = 0.75) {
-    return new Promise(resolve => {
+    const paint = source => {
       try {
-        const img = new Image();
-        img.onload = () => {
-          try {
-            const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
-            if (scale >= 1) return resolve(dataUrl);            /* already small enough */
-            const c = document.createElement('canvas');
-            c.width = Math.round(img.width * scale);
-            c.height = Math.round(img.height * scale);
-            c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-            resolve(c.toDataURL('image/jpeg', quality));
-          } catch { resolve(dataUrl); }
-        };
-        img.onerror = () => resolve(dataUrl);
-        img.src = dataUrl;
-      } catch { resolve(dataUrl); }
+        const scale = Math.min(1, maxDim / Math.max(source.width, source.height));
+        const c = document.createElement('canvas');
+        c.width = Math.max(1, Math.round(source.width * scale));
+        c.height = Math.max(1, Math.round(source.height * scale));
+        const ctx = c.getContext('2d');
+        try { ctx.filter = 'grayscale(1) contrast(' + (maxDim >= 2000 ? '1.18' : '1.22') + ') brightness(1.06)'; } catch { /* old browser → unfiltered */ }
+        ctx.drawImage(source, 0, 0, c.width, c.height);
+        return c.toDataURL('image/jpeg', quality);
+      } catch { return dataUrl; }
+    };
+    const legacyDecode = () => new Promise((res, rej) => {
+      const img = new Image();
+      img.onload = () => res(img);
+      img.onerror = () => rej(new Error('decode failed'));
+      img.src = dataUrl;
     });
+    const decode = () =>
+      fetch(dataUrl)
+        .then(r => r.blob())
+        .then(blob => createImageBitmap(blob, { imageOrientation: 'from-image' }));
+    return decode()
+      .then(paint)
+      .catch(() => legacyDecode().then(paint))
+      .catch(() => dataUrl);   /* v8.3.2 contract: never reject — worst case passthrough */
   }
 
   /* ---------- receipt reply cards ---------- */
@@ -2180,10 +2202,10 @@ Ask me anything, or tap a quick chip below.`);
     bindEvents();
 
     /* deploy verification — the browser TAB title shows the build instantly
-       (no DevTools, no Ctrl+F needed). If the tab does not say v8.3.5, the
+       (no DevTools, no Ctrl+F needed). If the tab does not say v8.3.6, the
        site is still serving the OLD script.js — re-deploy + hard-refresh. */
-    document.title = 'FinAgent AI · v8.3.5';
-    console.log(`%c${BUILD_TAG} — register auto-sync + per-user isolation + receipt UI-sync + text-category PIN + engine-grade image LIVE`,
+    document.title = 'FinAgent AI · v8.3.6';
+    console.log(`%c${BUILD_TAG} — register auto-sync + per-user isolation + receipt UI-sync + text-category PIN + EXIF-upright glare-free receipt image LIVE`,
       'background:#10B981;color:#0B0F19;font-weight:bold;padding:2px 8px;border-radius:4px');
 
     try {
