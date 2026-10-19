@@ -12,7 +12,7 @@
 
   /* BUILD TAG — Ctrl+F this string on the LIVE /script.js after deploying
      to prove the new file is really being served (Netlify caches hard). */
-  const BUILD_TAG = 'finagent-v8.3.3-receipt-uisync';
+  const BUILD_TAG = 'finagent-v8.3.4-text-category-wins';
   /* CACHE_VERSION — bump this to force EVERY device to discard its old
      local snapshot once. v8.2 = 8: pre-v8 caches may hold categories the
      old buggy sync adopted from a shared sheet (a stranger's budgets
@@ -1476,7 +1476,7 @@ Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining bud
       .filter(n => (CATEGORIES[n].budget || 0) > 0 && ROLL_HINTS[n])
       .map(n => `${n} absorbs: ${ROLL_HINTS[n]}`)
       .join(' | ');
-    return `\n\n[FinAgent system note — follow strictly when logging to the sheet: Category MUST be exactly one of the user's own categories: ${cats.join(', ')}. Pick the closest match; NEVER invent a near-duplicate or parallel category (no "Dining" when Food exists, no "Grocery" when Food/Groceries exists), and never use "Miscellaneous" unless nothing fits. If the user says "other purposes", "miscellaneous" or unspecified spending, the category MUST be their "Other" category when one exists — never "Shopping".${absorb ? ' Roll-ups: ' + absorb + '.' : ''} Currency is CNY: write amounts as ¥xx, never $.]`;
+    return `\n\n[FinAgent system note — follow strictly when logging to the sheet: Category MUST be exactly one of the user's own categories: ${cats.join(', ')}. TEXT CATEGORY WINS: if the user's own message text names a category (for example "spent on shopping budget" names Shopping, "paid for food" names Food, "transport cost" names Transport), you MUST log it under that exact named category — the user's words override any receipt hint and are NEVER treated as unspecified. Pick the closest match only when the text names no category; NEVER invent a near-duplicate or parallel category (no "Dining" when Food exists, no "Grocery" when Food/Groceries exists), and never use "Miscellaneous" unless nothing fits. If the user's text says "other purposes" or "miscellaneous", that IS naming their Other category — use "Other" when one exists, never "Shopping". The "Other" fallback is ONLY for spending where neither the text nor the receipt names a category — if the text names a real category, "Other" is wrong.${absorb ? ' Roll-ups: ' + absorb + '.' : ''} Currency is CNY: write amounts as ¥xx, never $.]`;
   }
 
   /* appended to image (receipt) messages — the engine must READ the
@@ -1484,7 +1484,7 @@ Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining bud
      With the sheet write using this category, the app's roll-up deducts
      from the right budget automatically on the next sync. */
   function receiptGuidance(email) {
-    return `\n\n[FinAgent receipt note — the user attached a receipt/payment screenshot. Read the image: extract the TOTAL amount actually paid, the merchant/store name, and the date. Log it as ONE expense for this user. SHEET ROW CONTRACT — the row's userId column MUST be exactly "${email}" (never a name, never blank); amount column = plain number only, no currency symbol or comma (write 3917.00, never ¥3917.00); date = YYYY-MM-DD; merchant = store name. Amount in CNY. Category MUST be exactly one of the user's own categories (see the FinAgent system note) — pick the closest match. If the total is unreadable or ambiguous, ask the user instead of guessing.]`;
+    return `\n\n[FinAgent receipt note — the user attached a receipt/payment screenshot. Read the image: extract the TOTAL amount actually paid, the merchant/store name, and the date. Log it as ONE expense for this user. SHEET ROW CONTRACT — the row's userId column MUST be exactly "${email}" (never a name, never blank); amount column = plain number only, no currency symbol or comma (write 3917.00, never ¥3917.00); date = YYYY-MM-DD; merchant = store name. Amount in CNY. CATEGORY PRECEDENCE — the user's text beats the picture: if the message text names a category (e.g. "spent on shopping budget" → Shopping, "food" → Food), the row's category MUST be exactly that named category, never "Other" and never a guess; use the image's own hints ONLY when the text names no category. Category must still be exactly one of the user's own categories (see the FinAgent system note). If the total is unreadable or ambiguous, ask the user instead of guessing.]`;
   }
 
   /* =====================================================================
@@ -2139,10 +2139,10 @@ Ask me anything, or tap a quick chip below.`);
     bindEvents();
 
     /* deploy verification — the browser TAB title shows the build instantly
-       (no DevTools, no Ctrl+F needed). If the tab does not say v8.3.3, the
+       (no DevTools, no Ctrl+F needed). If the tab does not say v8.3.4, the
        site is still serving the OLD script.js — re-deploy + hard-refresh. */
-    document.title = 'FinAgent AI · v8.3.3';
-    console.log(`%c${BUILD_TAG} — register auto-sync + per-user isolation + receipt OCR LIVE`,
+    document.title = 'FinAgent AI · v8.3.4';
+    console.log(`%c${BUILD_TAG} — register auto-sync + per-user isolation + receipt UI-sync + text-category-wins LIVE`,
       'background:#10B981;color:#0B0F19;font-weight:bold;padding:2px 8px;border-radius:4px');
 
     try {
