@@ -12,7 +12,7 @@
 
   /* BUILD TAG — Ctrl+F this string on the LIVE /script.js after deploying
      to prove the new file is really being served (Netlify caches hard). */
-  const BUILD_TAG = 'finagent-v8.3.7-real-gemini-read';
+  const BUILD_TAG = 'finagent-v8.3.8-advanced-receipt-ai';
   /* CACHE_VERSION — bump this to force EVERY device to discard its old
      local snapshot once. v8.2 = 8: pre-v8 caches may hold categories the
      old buggy sync adopted from a shared sheet (a stranger's budgets
@@ -1539,7 +1539,7 @@ Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining bud
      this category, the app's roll-up deducts from the right budget
      automatically on the next sync. */
   function receiptGuidance(email) {
-    return `\n\n[FinAgent receipt note — the user attached a receipt/payment screenshot. You ARE a vision model: READ THE PHOTO ITSELF, line by line, like a human bookkeeper — the picture is the source of truth for the total, merchant and date. TOTAL: find the printed grand total — 合计, 总计, 实付, 实收, 应付金额, Total, Grand Total, Amount Due, Total Payable, Balance Due — the big bold final figure; NEVER a subtotal, unit price or line item. MERCHANT: the store/shop name printed at the top. Values like "ERR", "Error", "Unknown", "N/A", "???" or blank are FORBIDDEN as merchant — write the best name you can actually see on the photo. CATEGORY: read it FROM THE IMAGE — what the receipt sells decides: food/restaurant/grocery items → the user's Food or Dining; clothes/shoes/electronics/mall goods → Shopping; tuition/school/books/stationery → Education; taxi/metro/fuel/parking → Transport; medicine/pharmacy/hospital → Health; electricity/water/gas/internet bills → Utilities; hotel/flights/trips → Travel; movies/games → Entertainment. Use ONLY the user's own category names (see the FinAgent system note). "Other"/"Miscellaneous" is ONLY for a photo where genuinely nothing recognizable appears — a receipt whose items you can read must NEVER land there. TEXT BEATS IMAGE: if the user's own message text names a category, that exact named category overrides the image hints (see TEXT CATEGORY WINS). SHEET ROW CONTRACT — the row's userId column MUST be exactly "${email}" (never a name, never blank); amount column = plain number only, no currency symbol or comma (write 3917.00, never ¥3917.00); date = YYYY-MM-DD; merchant = store name. Amount in CNY. NEVER ask the user to type the amount manually when a photo is attached — reading it is YOUR job: write the row with your best reading of the printed total and, only if a part was truly unclear, say exactly which part. Log it as ONE expense for this user.]`;
+    return `\n\n[FinAgent receipt note — the user attached a receipt/payment screenshot. You ARE a vision model: READ THE PHOTO ITSELF, line by line, like a human bookkeeper — the picture is the source of truth for the total, merchant and date. TOTAL: find the printed grand total — 合计, 总计, 实付, 实收, 应付金额, Total, Grand Total, Amount Due, Total Payable, Balance Due — the big bold final figure; NEVER a subtotal, unit price or line item. MERCHANT: the store/shop name printed at the top. Values like "ERR", "Error", "Unknown", "N/A", "???" or blank are FORBIDDEN as merchant — write the best name you can actually see on the photo. CATEGORY: read it FROM THE IMAGE — what the receipt sells decides: food/restaurant/grocery items → the user's Food or Dining; clothes/shoes/electronics/mall goods → Shopping; tuition/school/books/stationery → Education; taxi/metro/fuel/parking → Transport; medicine/pharmacy/hospital → Health; electricity/water/gas/internet bills → Utilities; hotel/flights/trips → Travel; movies/games → Entertainment. Use ONLY the user's own category names (see the FinAgent system note). "Other"/"Miscellaneous" is ONLY for a photo where genuinely nothing recognizable appears — a receipt whose items you can read must NEVER land there. TEXT BEATS IMAGE: if the user's own message text names a category, that exact named category overrides the image hints (see TEXT CATEGORY WINS). SHEET ROW CONTRACT — the row's userId column MUST be exactly "${email}" (never a name, never blank); amount column = plain number only, no currency symbol or comma (write 258.00, never ¥258.00); date = YYYY-MM-DD; merchant = store name. Amount in CNY. NEVER ask the user to type the amount manually when a photo is attached — reading it is YOUR job: write the row with your best reading of the printed total and, only if a part was truly unclear, say exactly which part. Log it as ONE expense for this user.]`;
   }
 
   /* =====================================================================
@@ -1891,7 +1891,11 @@ Fastest fix: type the amount and store in one line, e.g. *"Spent ${CUR}120 at KF
        immediately; the engine is then TOLD what landed so its Sheets
        write stays consistent (the sync merge dedupes it). */
     receiptTruth = null;                /* v8.3.7 — fresh per send; a stale truth can never leak */
-    let receiptExp = null, engineImage = null, ocrRaw = '';
+    let receiptExp = null, engineImage = null, ocrRaw = '', deferredOcr = false;
+    /* v8.3.8 — the user's text is parsed BEFORE the OCR runs: when the text
+       names a category ("spent on shopping"), that category must govern the
+       receipt row no matter what the local scan later guesses. */
+    const textCat = image ? (matchTrainedCategory(text || '') || detectCategory(text || '')) : null;
     if (image) {
       showTyping();
       const original = image;             /* v8.3.5 — full-quality source kept for the engine copy */
@@ -1904,11 +1908,30 @@ Fastest fix: type the amount and store in one line, e.g. *"Spent ${CUR}120 at KF
         ocrRaw = String(raw || '').replace(/\s+/g, ' ').trim();  /* v8.3.7 — even a failed parse carries digits */
         const hit = parseReceiptText(raw);
         if (hit && hit.amount > 0) {
-          if (hit.category) {
-            receiptExp = addExpense({ amount: hit.amount, category: hit.category, merchant: hit.merchant });
+          /* v8.3.8 — OCR CONFIDENCE GATE: a scan whose merchant came back
+             as sentinel garbage ("ERR", "??", no-vowel gibberish) is a
+             GARBAGE read — its digits are just as suspect. Auto-logging it
+             locally shielded the row from EVERY correction layer (no pin,
+             no receiptTruth, and the agent was told to COPY the garbage —
+             the exact ¥552/ERR/Other bug from the live screenshot). Such
+             scans are DEFERRED to the engine's vision instead: Gemini reads
+             the sharp 2000px photo (+ the raw transcript) and logs the real
+             printed total, while the text-named category still pins it. */
+          const ocrDodgy = !hit.merchant ||
+            /^(err(or)?|unknown|n\/a|null|none|misc(ellaneous)?|\?+|\.+|xx+)$/i.test(String(hit.merchant).trim()) ||
+            (String(hit.merchant).length <= 4 && !/[aeiou]/i.test(String(hit.merchant)));
+          if (ocrDodgy) {
+            deferredOcr = true;             /* engine vision owns the read; offline fallback keeps the digits */
+            pendingReceipt = { amount: hit.amount, merchant: hit.merchant };
+          } else if (textCat || hit.category) {
+            /* v8.3.8 — TEXT BEATS LOCAL OCR: the text-named category
+               overrides whatever the scan guessed (the old code logged the
+               scan's own "Other" and never even armed the pin). */
+            const cat = textCat ? (rollToBudgeted(textCat) || textCat) : hit.category;
+            receiptExp = addExpense({ amount: hit.amount, category: cat, merchant: hit.merchant });
           } else {
             pendingReceipt = { amount: hit.amount, merchant: hit.merchant };
-            receiptTruth = { amount: hit.amount, merchant: hit.merchant, at: Date.now() };  /* v8.3.7 — OCR ground truth */
+            receiptTruth = { amount: hit.amount, merchant: hit.merchant, at: Date.now() };  /* v8.3.7 — trusted OCR ground truth */
           }
         }
       } catch { /* OCR unavailable (offline / CDN blocked) → engine vision or manual entry */ }
@@ -1932,8 +1955,7 @@ Fastest fix: type the amount and store in one line, e.g. *"Spent ${CUR}120 at KF
        expenses) and PINS the result. The agent is no longer asked to
        judge a category — it is told. No text-named category → pin cleared,
        so a stale pin can never leak into the next image message. */
-    const pinCat = image && !receiptExp
-      ? (matchTrainedCategory(text || '') || detectCategory(text || '')) : null;
+    const pinCat = image && !receiptExp ? textCat : null;   /* v8.3.8 — the SAME parse the OCR gate used */
     categoryPin = pinCat ? { cat: pinCat, at: Date.now() } : null;
 
     /* v8.3.7 — OCR TRANSCRIPT BRIDGE: whatever Tesseract managed to scan
@@ -1952,8 +1974,11 @@ Fastest fix: type the amount and store in one line, e.g. *"Spent ${CUR}120 at KF
           chatInput: (receiptExp
               ? `The user attached a receipt photo that the app already read and logged: ${money(receiptExp.amount)} at ${receiptExp.merchant}, category ${receiptExp.category}. Write exactly ONE expense row to the sheet for userId ${currentUser.email} — amount ${receiptExp.amount}, merchant ${receiptExp.merchant}, category ${receiptExp.category}, date today. Do not log a second row; just confirm briefly.`
               : (text || 'Please log this receipt as an expense.')
-                + (image && pendingReceipt
+                + (image && pendingReceipt && receiptTruth
                   ? `\n\n[FinAgent local OCR note — the app's own OCR already read THIS receipt: total ${money(pendingReceipt.amount)}${pendingReceipt.merchant ? `, merchant "${pendingReceipt.merchant}"` : ''}. Write the row with THIS exact total and merchant — the app verifies both against its OCR read.]`
+                  : '')
+                + (deferredOcr
+                  ? `\n\n[FinAgent OCR warning — the browser's own scan of THIS photo came back GARBAGE (unreadable merchant${pendingReceipt ? ` "${pendingReceipt.merchant}"` : ''}, digits just as suspect). Do NOT copy the browser OCR: treat the PHOTO as the only source of truth and read the printed grand total, merchant and date from the image yourself.]`
                   : ''))
             + ocrBridge
             + ((exp || receiptExp || image || /spent|paid|bought|cost|logged|expense/i.test(text || '')) ? categoryGuidance() : '')
@@ -1981,7 +2006,16 @@ Fastest fix: type the amount and store in one line, e.g. *"Spent ${CUR}120 at KF
     hideTyping();
 
     if (receiptExp)          addBotMessage(replyReceipt(receiptExp));
-    else if (pendingReceipt) addBotMessage(askReceiptCategory());
+    else if (pendingReceipt && deferredOcr && !webhookOk && pinCat) {
+      /* v8.3.8 — offline fallback: the engine is unreachable, so the
+         scanned digits log under the TEXT-pinned category (best effort) */
+      const e = addExpense({ amount: pendingReceipt.amount, category: pinCat, merchant: pendingReceipt.merchant });
+      pendingReceipt = null;
+      addBotMessage(replyReceipt(e));
+    }
+    else if (pendingReceipt && deferredOcr && !webhookOk) addBotMessage(askReceiptCategory());
+    else if (pendingReceipt && !deferredOcr) addBotMessage(askReceiptCategory());
+    else if (pendingReceipt) pendingReceipt = null;   /* v8.3.8 — engine owns the row; no stale local completion */
 
     const replyTxt = reply && String(reply).trim();
     if (replyTxt && image && !receiptExp && !pendingReceipt &&
@@ -2254,10 +2288,10 @@ Ask me anything, or tap a quick chip below.`);
     bindEvents();
 
     /* deploy verification — the browser TAB title shows the build instantly
-       (no DevTools, no Ctrl+F needed). If the tab does not say v8.3.7, the
+       (no DevTools, no Ctrl+F needed). If the tab does not say v8.3.8, the
        site is still serving the OLD script.js — re-deploy + hard-refresh. */
-    document.title = 'FinAgent AI · v8.3.7';
-    console.log(`%c${BUILD_TAG} — register auto-sync + per-user isolation + receipt UI-sync + text-category PIN + EXIF-upright receipt image + REAL-GEMINI vision protocol + OCR transcript bridge + sentinel judge LIVE`,
+    document.title = 'FinAgent AI · v8.3.8';
+    console.log(`%c${BUILD_TAG} — register auto-sync + per-user isolation + receipt UI-sync + text-category PIN + EXIF-upright receipt image + REAL-GEMINI vision protocol + OCR transcript bridge + sentinel judge + OCR CONFIDENCE GATE (text-pin beats local OCR) LIVE`,
       'background:#10B981;color:#0B0F19;font-weight:bold;padding:2px 8px;border-radius:4px');
 
     try {
