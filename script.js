@@ -12,7 +12,7 @@
 
   /* BUILD TAG — Ctrl+F this string on the LIVE /script.js after deploying
      to prove the new file is really being served (Netlify caches hard). */
-  const BUILD_TAG = 'finagent-v8.3.4-text-category-wins';
+  const BUILD_TAG = 'finagent-v8.3.5-receipt-pin';
   /* CACHE_VERSION — bump this to force EVERY device to discard its old
      local snapshot once. v8.2 = 8: pre-v8 caches may hold categories the
      old buggy sync adopted from a shared sheet (a stranger's budgets
@@ -191,6 +191,9 @@
   let engineSynced = false;
   let pendingImage = null;
   let pendingReceipt = null;   /* receipt read by OCR — amount known, category pending */
+  let categoryPin = null;      /* v8.3.5 — {cat, at}: category the app itself parsed from the user's
+                                  text on the last image message; syncFromEngine enforces it on fresh
+                                  agent rows for 10 min (vision misreads can no longer win) */
   let typingRow = null;
   let sessionId = '';
   const lastLevel = {};
@@ -592,6 +595,22 @@
       for (const p of pairs) {
         const c = rollToBudgeted(p.e.category);
         if (c && c !== p.e.category) p.e.category = c;
+      }
+      /* v8.3.5 — CATEGORY PIN ENFORCEMENT: when the app itself parsed a
+         category out of the user's text on a recent image message, fresh
+         agent-written rows for this user obey it — a vision misread that
+         wrote "Other" instead of the pinned "Shopping" is corrected HERE,
+         deterministically, with no second agent round-trip. The merchant
+         and amount stay the agent's (they come from the picture); only the
+         column the user named gets pinned. Untagged and foreign-tagged
+         rows are never touched; rows with a local twin are left alone. */
+      if (categoryPin && Date.now() - categoryPin.at < 10 * 60 * 1000) {
+        for (const p of pairs) {
+          if (!p.e || p.tag !== currentUser.email.toLowerCase()) continue;
+          if (p.e.category && p.e.category !== categoryPin.cat &&
+              !localLedger.some(le => sameSpend(le, p.e)))
+            p.e.category = categoryPin.cat;
+        }
       }
       /* adoption rule — (a) rows TAGGED with this email are authoritative
          even when brand-new: the n8n agent writes the receipt row with
@@ -1812,9 +1831,10 @@ Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining bud
        log against the user's own category and deduct from that budget
        immediately; the engine is then TOLD what landed so its Sheets
        write stays consistent (the sync merge dedupes it). */
-    let receiptExp = null;
+    let receiptExp = null, engineImage = null;
     if (image) {
       showTyping();
+      const original = image;             /* v8.3.5 — full-quality source kept for the engine copy */
       try {
         image = await shrinkImage(image);   /* v8.3.2 — faster OCR + ~10x smaller engine payload */
         const raw = await Promise.race([
@@ -1830,6 +1850,10 @@ Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining bud
           }
         }
       } catch { /* OCR unavailable (offline / CDN blocked) → engine vision or manual entry */ }
+      /* v8.3.5 — the agent now reads a SHARP 2000px @0.82 copy re-encoded from
+         the original, not the OCR-grade 1400px @0.75: Tesseract wanted speed,
+         Gemini wants legibility (garbled "Wo. YER Whi"-style merchant reads). */
+      if (!receiptExp) engineImage = await shrinkImage(original, 2000, 0.82);
       hideTyping();
     }
 
@@ -1840,18 +1864,35 @@ Try *"Spent ${CUR}12 on coffee at Starbucks"*, or ask *"What is my remaining bud
 
     let reply = null, webhookOk = false;
     const url = getWebhook();
+
+    /* v8.3.5 — CATEGORY PIN: the app parses the user's text with its OWN
+       category engine (the same battle-tested matcher that routes typed
+       expenses) and PINS the result. The agent is no longer asked to
+       judge a category — it is told. No text-named category → pin cleared,
+       so a stale pin can never leak into the next image message. */
+    const pinCat = image && !receiptExp
+      ? (matchTrainedCategory(text || '') || detectCategory(text || '')) : null;
+    categoryPin = pinCat ? { cat: pinCat, at: Date.now() } : null;
+
     if (url) {
       try {
         reply = await callWebhook({
           action: 'chat',
           chatInput: (receiptExp
               ? `The user attached a receipt photo that the app already read and logged: ${money(receiptExp.amount)} at ${receiptExp.merchant}, category ${receiptExp.category}. Write exactly ONE expense row to the sheet for userId ${currentUser.email} — amount ${receiptExp.amount}, merchant ${receiptExp.merchant}, category ${receiptExp.category}, date today. Do not log a second row; just confirm briefly.`
-              : (text || 'Please log this receipt as an expense.'))
+              : (text || 'Please log this receipt as an expense.')
+                + (image && pendingReceipt
+                  ? `\n\n[FinAgent local OCR note — the app's own OCR already read THIS receipt: total ${money(pendingReceipt.amount)}${pendingReceipt.merchant ? `, merchant "${pendingReceipt.merchant}"` : ''}. Write the row with THIS total after checking it against the image; only if the image CLEARLY shows a different total, use the image's total and say so.]`
+                  : ''))
             + ((exp || receiptExp || image || /spent|paid|bought|cost|logged|expense/i.test(text || '')) ? categoryGuidance() : '')
-            + (image && !receiptExp ? receiptGuidance(currentUser.email) : ''),
-          image: image || null,
+            + (image && !receiptExp ? receiptGuidance(currentUser.email) : '')
+            + (pinCat
+              ? `\n\n[FinAgent CATEGORY PIN — the app parsed the user's text with its own category engine: the category for this expense is PINNED to "${pinCat}". Write exactly "${pinCat}" in the category column of the row — do not choose, do not guess, any other category. The image is for the amount, merchant and date only.]`
+              : ''),
+          image: receiptExp ? image : (engineImage || image || null),
           sessionId,
           userId: currentUser.email,
+          textCategory: pinCat || undefined,
           currency: 'CNY',
           timestamp: new Date().toISOString(),
           source: 'finagent-web',
@@ -2139,10 +2180,10 @@ Ask me anything, or tap a quick chip below.`);
     bindEvents();
 
     /* deploy verification — the browser TAB title shows the build instantly
-       (no DevTools, no Ctrl+F needed). If the tab does not say v8.3.4, the
+       (no DevTools, no Ctrl+F needed). If the tab does not say v8.3.5, the
        site is still serving the OLD script.js — re-deploy + hard-refresh. */
-    document.title = 'FinAgent AI · v8.3.4';
-    console.log(`%c${BUILD_TAG} — register auto-sync + per-user isolation + receipt UI-sync + text-category-wins LIVE`,
+    document.title = 'FinAgent AI · v8.3.5';
+    console.log(`%c${BUILD_TAG} — register auto-sync + per-user isolation + receipt UI-sync + text-category PIN + engine-grade image LIVE`,
       'background:#10B981;color:#0B0F19;font-weight:bold;padding:2px 8px;border-radius:4px');
 
     try {
