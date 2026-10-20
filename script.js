@@ -29,7 +29,7 @@
      Deployed sites (Netlify, GitHub Pages…) start with an EMPTY localStorage,
      so without this default the engine falls back to local mode + Standby.
      Override anytime via the Settings (gear) modal. */
-  const DEFAULT_WEBHOOK = 'https://ainuba.app.n8n.cloud/webhook/finance-agent';
+  const DEFAULT_WEBHOOK = 'https://awesome66.app.n8n.cloud/webhook/finance-agent';
   const dataKey      = email => `finagent_data_v1_${email}`;
   const profileKey   = email => `finagent_profile_v1_${email}`;
   const catKey       = email => `finagent_cats_v1_${email}`;
